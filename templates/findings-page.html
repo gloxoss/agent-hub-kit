@@ -1,0 +1,200 @@
+<title>Project Audit Findings</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* Layout: a sticky filter bar over one scannable list; summary first, detail on demand. */
+:root {
+  --bg: #f5f7f9; --surface: #ffffff; --fg: #17222c; --muted: #5b6b78; --line: #dde4ea;
+  --accent: #2487b8; --accent-soft: #e3f0f7;
+  --p0: #b42318; --p0-soft: #fde8e6; --p1: #b54708; --p1-soft: #fdf0e1; --p2: #8a6d00; --p2-soft: #f8f1d6; --p3: #4b5b68; --p3-soft: #eaeef1;
+  --ok: #1f7a4d; --ok-soft: #e2f3ea; --part: #7a5af5; --part-soft: #ece8fd;
+  --font-body: "Source Sans 3", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0f161c; --surface: #16212a; --fg: #e4ebf0; --muted: #93a4b1; --line: #26343f;
+  --accent: #5bb4e0; --accent-soft: #15303f;
+  --p0: #ff8a7d; --p0-soft: #3a1714; --p1: #f7b267; --p1-soft: #3a2611; --p2: #e2c25b; --p2-soft: #322b10; --p3: #a9b6c0; --p3-soft: #222d35;
+  --ok: #6fd3a0; --ok-soft: #133024; --part: #b3a1ff; --part-soft: #241d45; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #0f161c; --surface: #16212a; --fg: #e4ebf0; --muted: #93a4b1; --line: #26343f;
+  --accent: #5bb4e0; --accent-soft: #15303f;
+  --p0: #ff8a7d; --p0-soft: #3a1714; --p1: #f7b267; --p1-soft: #3a2611; --p2: #e2c25b; --p2-soft: #322b10; --p3: #a9b6c0; --p3-soft: #222d35;
+  --ok: #6fd3a0; --ok-soft: #133024; --part: #b3a1ff; --part-soft: #241d45; color-scheme: dark; }
+body { background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 16px; line-height: 1.5; }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--surface); }
+.wrap { max-width: 1080px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+header.top { padding-block: 28px 18px; display: grid; gap: 6px; }
+h1 { font-size: 1.75rem; line-height: 1.2; margin: 0; text-wrap: balance; }
+.sub { color: var(--muted); margin: 0; max-width: 68ch; }
+.sum { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; padding-block: 6px 18px; }
+.tile { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; display: grid; gap: 2px; }
+.tile b { font-size: 1.6rem; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.tile span { color: var(--muted); font-size: .85rem; }
+.prio { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 14px; display: grid; gap: 10px; margin-bottom: 18px; }
+.prio h2 { font-size: .8rem; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 0; }
+.prow { display: grid; grid-template-columns: 2.2rem minmax(0, 1fr) 7.5rem; gap: 10px; align-items: center; font-size: .9rem; }
+.bar { height: 10px; border-radius: 5px; background: var(--line); overflow: hidden; display: flex; }
+.bar i { display: block; height: 100%; }
+.prow small { color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
+.legend { color: var(--muted); font-size: .85rem; display: flex; flex-wrap: wrap; gap: 4px 16px; }
+.filters { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--bg); padding-block: 10px; border-bottom: 1px solid var(--line); display: grid; gap: 8px; }
+.frow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.frow label.lab { font-size: .75rem; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); min-width: 4.5rem; }
+input[type=search], select { font: inherit; font-size: .95rem; color: var(--fg); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; min-width: 0; }
+input[type=search] { flex: 1 1 260px; }
+.chip { font: inherit; font-size: .85rem; border: 1px solid var(--line); background: var(--surface); color: var(--fg); border-radius: 999px; padding: 4px 11px; cursor: pointer; }
+.chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--surface); }
+.chip:focus-visible, select:focus-visible, input:focus-visible, summary:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.count { color: var(--muted); font-size: .9rem; }
+.reset { font: inherit; font-size: .85rem; background: none; border: none; color: var(--accent); cursor: pointer; padding: 4px 6px; }
+.list { display: grid; gap: 8px; padding-block: 14px 48px; }
+details.f { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
+details.f[open] { border-color: var(--accent); }
+summary { list-style: none; cursor: pointer; padding: 12px 14px; display: grid; gap: 6px; }
+summary::-webkit-details-marker { display: none; }
+.meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: .8rem; }
+.pill { border-radius: 4px; padding: 1px 7px; font-weight: 600; font-size: .75rem; letter-spacing: .02em; }
+.P0 { background: var(--p0-soft); color: var(--p0); } .P1 { background: var(--p1-soft); color: var(--p1); }
+.P2 { background: var(--p2-soft); color: var(--p2); } .P3 { background: var(--p3-soft); color: var(--p3); }
+.s-fixed { background: var(--ok-soft); color: var(--ok); } .s-partial { background: var(--part-soft); color: var(--part); }
+.s-false { background: var(--p3-soft); color: var(--p3); } .s-blocked, .s-open { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+.id { font-family: var(--font-mono); font-size: .78rem; color: var(--muted); }
+.tag { color: var(--muted); }
+.tag.hidden-mod { font-style: italic; }
+.ptext { margin: 0; font-weight: 600; line-height: 1.4; }
+.body { padding: 0 14px 14px; display: grid; gap: 10px; border-top: 1px solid var(--line); padding-top: 12px; }
+.kv { display: grid; grid-template-columns: 8.5rem minmax(0, 1fr); gap: 4px 14px; font-size: .95rem; }
+.kv dt { color: var(--muted); font-size: .8rem; letter-spacing: .04em; text-transform: uppercase; padding-top: 3px; }
+.kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+code, .q { font-family: var(--font-mono); font-size: .8rem; }
+.q { display: block; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; overflow-x: auto; white-space: pre; }
+.empty { color: var(--muted); padding: 30px 0; text-align: center; }
+footer { color: var(--muted); font-size: .85rem; padding-block: 0 32px; }
+@media (max-width: 560px) { .kv { grid-template-columns: 1fr; } .prow { grid-template-columns: 2.2rem minmax(0, 1fr); } .prow small { grid-column: 2; text-align: left; } }
+@media (prefers-reduced-motion: no-preference) { details.f { transition: border-color .15s; } }
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <h1>Project Audit Findings</h1>
+    <p class="sub">Every problem found in the full audit of 2026-10-18, with its fix status. Click a finding to see where it is, why it matters and how to fix it. Status comes from the fix log (FIXES.md), updated __GENERATED__ UTC.</p>
+  </header>
+
+  <section class="sum" id="sum" aria-label="Totals"></section>
+
+  <section class="prio" aria-label="By priority">
+    <h2>By priority</h2>
+    <div id="prio"></div>
+    <div class="legend">
+      <span><b>P0</b> breaks something critical or is a security hole</span>
+      <span><b>P1</b> serious, wrong data or a blocked task</span>
+      <span><b>P2</b> should fix, confusing or partly wrong</span>
+      <span><b>P3</b> minor, polish or an idea</span>
+    </div>
+  </section>
+</div>
+
+<div class="filters">
+  <div class="wrap" style="display:grid;gap:8px">
+    <div class="frow">
+      <input type="search" id="q" placeholder="Search problem, page, file or ID" aria-label="Search findings">
+      <select id="mod" aria-label="Module"><option value="">All modules</option></select>
+      <select id="cat" aria-label="Category"><option value="">All categories</option></select>
+    </div>
+    <div class="frow" role="group" aria-label="Priority"><label class="lab">Priority</label><span id="fp"></span></div>
+    <div class="frow" role="group" aria-label="Status"><label class="lab">Status</label><span id="fs"></span></div>
+    <div class="frow" role="group" aria-label="V1 scope"><label class="lab">In V1</label><span id="fv"></span>
+      <span class="count" id="count" aria-live="polite"></span><button class="reset" id="reset" type="button">Clear filters</button></div>
+  </div>
+</div>
+
+<div class="wrap">
+  <main class="list" id="list"></main>
+  <footer>Hidden modules are switched off in V1 (owner decision 2026-10-18); their findings matter when the module is turned on. Fixes recorded only inside page reports may not show here yet.</footer>
+</div>
+
+<script>
+const ROWS = __DATA__;
+const ST = { fixed: 'Fixed', partial: 'Partly fixed', false: 'False alarm', blocked: 'Blocked', open: 'Open' };
+const CAT = { 'business-logic': 'Business logic', 'non-functional': 'Broken feature', security: 'Security', hardcoded: 'Hardcoded value', ux: 'Ease of use', structure: 'Code structure', 'mock-data': 'Fake data', enhancement: 'Idea' };
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+// Inline `code` from the audit text renders as code; everything else is escaped.
+const md = (s) => esc(s).replace(/`([^`]+)`/g, '<code>$1</code>');
+
+const state = { q: '', mod: '', cat: '', p: new Set(), s: new Set(), v: 'all' };
+try { const saved = JSON.parse(localStorage.getItem('findings-filters') || 'null'); if (saved) { Object.assign(state, saved, { p: new Set(saved.p), s: new Set(saved.s) }); } } catch {}
+const save = () => { try { localStorage.setItem('findings-filters', JSON.stringify({ ...state, p: [...state.p], s: [...state.s] })); } catch {} };
+
+function summary() {
+  const n = (f) => ROWS.filter(f).length;
+  const tiles = [
+    [ROWS.length, 'findings in total'],
+    [n((r) => r.st === 'fixed'), 'fixed'],
+    [n((r) => r.st === 'partial'), 'partly fixed'],
+    [n((r) => r.st === 'open' || r.st === 'blocked'), 'still open'],
+    [n((r) => r.st === 'false'), 'false alarms'],
+    [n((r) => r.v1 && (r.st === 'open' || r.st === 'blocked')), 'open in V1 modules'],
+  ];
+  $('sum').innerHTML = tiles.map(([v, l]) => `<div class="tile"><b>${v}</b><span>${l}</span></div>`).join('');
+  $('prio').innerHTML = ['P0', 'P1', 'P2', 'P3'].map((p) => {
+    const all = ROWS.filter((r) => r.p === p), t = all.length || 1;
+    const f = all.filter((r) => r.st === 'fixed' || r.st === 'false').length, pa = all.filter((r) => r.st === 'partial').length;
+    return `<div class="prow"><span class="pill ${p}">${p}</span><div class="bar" role="img" aria-label="${p}: ${f} done, ${pa} partly, ${all.length - f - pa} open of ${all.length}"><i style="width:${(f / t) * 100}%;background:var(--ok)"></i><i style="width:${(pa / t) * 100}%;background:var(--part)"></i></div><small>${f + pa} of ${all.length} handled</small></div>`;
+  }).join('');
+}
+
+function chips(el, items, set, multi) {
+  $(el).innerHTML = items.map(([v, l]) => `<button class="chip" type="button" data-v="${v}" aria-pressed="${multi ? set.has(v) : state.v === v}">${l}</button>`).join(' ');
+  $(el).onclick = (e) => {
+    const b = e.target.closest('.chip'); if (!b) return;
+    if (multi) { set.has(b.dataset.v) ? set.delete(b.dataset.v) : set.add(b.dataset.v); } else state.v = b.dataset.v;
+    drawChips(); render();
+  };
+}
+function drawChips() {
+  chips('fp', [['P0', 'P0'], ['P1', 'P1'], ['P2', 'P2'], ['P3', 'P3']], state.p, true);
+  chips('fs', [['open', 'Open'], ['partial', 'Partly fixed'], ['fixed', 'Fixed'], ['false', 'False alarm'], ['blocked', 'Blocked']], state.s, true);
+  chips('fv', [['all', 'All'], ['v1', 'Visible in V1'], ['hidden', 'Hidden in V1']], null, false);
+}
+
+function render() {
+  save();
+  const q = state.q.trim().toLowerCase();
+  const shown = ROWS.filter((r) =>
+    (!state.p.size || state.p.has(r.p)) && (!state.s.size || state.s.has(r.st)) &&
+    (!state.mod || r.lane === state.mod) && (!state.cat || r.cat === state.cat) &&
+    (state.v === 'all' || (state.v === 'v1') === r.v1) &&
+    (!q || [r.id, r.problem, r.where, r.impact, r.fix, r.evidence, r.module].join(' ').toLowerCase().includes(q)));
+  $('count').textContent = `Showing ${shown.length} of ${ROWS.length}`;
+  $('list').innerHTML = shown.length ? shown.map((r) => `
+    <details class="f" id="${r.id}">
+      <summary>
+        <div class="meta"><span class="pill ${r.p}">${r.p}</span><span class="pill s-${r.st}">${ST[r.st]}</span>
+          <span class="tag">${esc(r.module)}</span><span class="tag">${esc(CAT[r.cat] ?? r.cat)}</span>
+          ${r.v1 ? '' : '<span class="tag hidden-mod">hidden in V1</span>'}<span class="id">${r.id}</span></div>
+        <p class="ptext">${md(r.problem)}</p>
+      </summary>
+      <div class="body"><dl class="kv">
+        <dt>Where</dt><dd>${md(r.where)}</dd>
+        <dt>Why it matters</dt><dd>${md(r.impact)}</dd>
+        <dt>Suggested fix</dt><dd>${md(r.fix)}</dd>
+        <dt>Evidence</dt><dd>${md(r.evidence)}${r.quote ? `<span class="q">${esc(r.quote)}</span>` : ''}</dd>
+        <dt>Status</dt><dd>${ST[r.st]}${r.stNote ? `: ${md(r.stNote)}` : ''}${r.stFiles ? `<br><code>${esc(r.stFiles)}</code>` : ''}</dd>
+        ${r.known && r.known !== 'new' ? `<dt>Older audit</dt><dd>${esc(r.known)}</dd>` : ''}
+      </dl></div>
+    </details>`).join('') : '<p class="empty">No finding matches these filters. Clear a filter to see more.</p>';
+}
+
+const mods = [...new Map(ROWS.map((r) => [r.lane, r.module])).entries()].sort((a, b) => a[1].localeCompare(b[1]));
+$('mod').innerHTML += mods.map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('');
+const cats = [...new Set(ROWS.map((r) => r.cat))].sort();
+$('cat').innerHTML += cats.map((c) => `<option value="${c}">${esc(CAT[c] ?? c)}</option>`).join('');
+$('q').value = state.q; $('mod').value = state.mod; $('cat').value = state.cat;
+$('q').oninput = (e) => { state.q = e.target.value; render(); };
+$('mod').onchange = (e) => { state.mod = e.target.value; render(); };
+$('cat').onchange = (e) => { state.cat = e.target.value; render(); };
+$('reset').onclick = () => { Object.assign(state, { q: '', mod: '', cat: '', p: new Set(), s: new Set(), v: 'all' }); $('q').value = ''; $('mod').value = ''; $('cat').value = ''; drawChips(); render(); };
+summary(); drawChips(); render();
+if (location.hash) { const d = document.getElementById(location.hash.slice(1)); if (d) { d.open = true; d.scrollIntoView(); } }
+</script>

@@ -1,0 +1,42 @@
+# {{PROJECT}} — agent entry point
+
+This workspace uses the **agent-hub-orchestrator** kit. One Claude session orchestrates; background executors build and review through a file-based hub; the autoloop handles the routine review cycle.
+
+## 1. Start every session here
+
+Work runs through the agent hub (`.agent-hub/`, rules in `.agent-hub/PROTOCOL.md`). Know your role first.
+
+- **Main session = orchestrator.** Load the `agent-hub-orchestrator` skill. It plans tasks, dispatches worker agents, audits their work, and commits. It never does the migration work itself.
+- **Worker or verifier** (a subagent, Codex, Gemini, opencode): you were given an agent id and a task id. Read `.agent-hub/PROTOCOL.md`, then your brief `.agent-hub/tasks/<TASK>.md`. Load only what it lists.
+
+## 2. Order of authority (when anything disagrees)
+
+1. The user's latest explicit instruction.
+2. Pack-specific contract (if present in `packs/{{PACK}}/`).
+3. This file and `docs/ARCHITECTURE.md`.
+4. `docs/DECISIONS.md` (logged deviations, each with a reason).
+5. `.agent-hub/PROTOCOL.md`.
+
+## 3. Layout
+
+```
+.agent-hub/          hub.mjs, PROTOCOL.md, tasks/, runs/
+docs/                ARCHITECTURE.md, DECISIONS.md, HANDOFF.md, GATES.md
+.claude/             skills/ agents/ (copied from the pack by init)
+```
+
+## 4. Pipeline
+
+See `packs/{{PACK}}/PACK.md` for the pipeline steps and unit of work.
+
+## 5. Hard rules
+
+1. **Edit only claimed files.** Workers claim files before touching them.
+2. **No commits by workers.** Only the orchestrator commits, only the accepted task's files.
+3. **No new dependencies** without explicit user approval.
+4. **No network at runtime** outside designated adapter files.
+5. **State on disk.** CHANGELOG.md for work log; HANDOFF.md for session memory; DECISIONS.md for deviations.
+
+## 6. Never
+
+Deploy, publish, or upload anything. Claim a check passed without running it.

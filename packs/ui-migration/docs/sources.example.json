@@ -1,0 +1,20 @@
+{
+  "$comment": "Example shape for docs/migration/sources.json. Copy to docs/migration/sources.json and replace the fake site. Single source of truth for source paths. Raw folders are read-only. Order = migration order.",
+  "sites": [
+    {
+      "id": "example",
+      "domain": "general",
+      "rawRoot": "example.webflow.io",
+      "pagesRoot": "example.webflow.io/example.webflow.io",
+      "localizedRoot": "localized/example",
+      "pages": [
+        { "id": "home", "file": "index.html" },
+        { "id": "catalog", "file": "catalog.html" },
+        { "id": "product", "file": "product/sample-product.html" },
+        { "id": "about", "file": "about.html" },
+        { "id": "contact", "file": "contact.html" },
+        { "id": "licences", "file": "utility-page/licences.html", "skip": "template utility page, no merge-target use" }
+      ]
+    }
+  ]
+}

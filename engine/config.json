@@ -1,0 +1,51 @@
+{
+  "baseBranch": "main",
+  "backlogPath": "docs/BACKLOG.md",
+  "commitTrailer": null,
+  "digestMinutes": 20,
+  "opencodeModel": "opencode/beam-free",
+  "hubDir": ".agent-hub",
+  "kit": {
+    "version": "2.0.0",
+    "source": null
+  },
+  "skillRoots": [
+    ".claude/skills",
+    "~/.claude/skills",
+    "~/.agents/skills",
+    "~/.codex/skills",
+    "~/.gemini/skills"
+  ],
+  "requireSkills": false,
+  "checkHealthBeforeDispatch": false,
+  "dailyJobLimit": {},
+  "resources": {
+    "buildMinFreeMB": 0,
+    "reviewMinFreeMB": 0
+  },
+  "locales": {
+    "path": "locales",
+    "languages": [
+      "en"
+    ]
+  },
+  "audit": {
+    "dir": "docs/audit",
+    "index": "docs/audit/INDEX.md",
+    "fixes": "docs/audit/FIXES.md",
+    "pageReports": "docs/audit/pages",
+    "plans": "docs/plans"
+  },
+  "pages": {
+    "appRoot": ".",
+    "routesDir": "src/app",
+    "routePrefix": "",
+    "locales": [],
+    "reports": "docs/audit/pages",
+    "executor": "opencode",
+    "skills": []
+  },
+  "autoCommit": true,
+  "planners": "^M-",
+  "notifyVisible": null
+}
