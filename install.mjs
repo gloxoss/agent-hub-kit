@@ -84,7 +84,7 @@ if (DRY) {
     console.log(`\nbacked up the previous install to ${show(backup)}`);
   }
   // The master is a git repo: never copy its .git or local clutter into the installed skill.
-  fs.cpSync(SRC, DEST, { recursive: true, filter: (src) => !/[\/](.git|node_modules)([\/]|$)/.test(src) });
+  fs.cpSync(SRC, DEST, { recursive: true, filter: (src) => !path.relative(SRC, src).split(/[\\/]/).some((part) => part === '.git' || part === 'node_modules') });
   const stamped = stampInstall(DEST);
   console.log(`\ninstalled ${files} files to ${show(DEST)}`);
   console.log(`KIT-SOURCE → ${stamped.master}`);
