@@ -51,7 +51,7 @@ for (const row of rows) {
   if (known.has(id)) continue;
   let dir = '';
   const scope = filesCell.split(/<br>|,/).map(strip).filter(Boolean).map((f) => {
-    if (f.includes('/')) { dir = f.slice(0, f.lastIndexOf('/') + 1); return f.replace(/\/\*(\.\w+)?$/, ''); }
+    if (f.includes('/')) { dir = f.slice(0, f.lastIndexOf('/') + 1); return f.replace(/\/\*\*?(\/\*)?(\.\w+)?$/, ''); } // folder globs (/*, /**, /**/*.png) become the folder: the hub matches paths and folder prefixes only
     return dir + f;
   });
   const deps = [...depsCell.matchAll(/`([A-Za-z0-9-]+)`/g)].map((m) => m[1]).filter((d) => d !== id && (known.has(d) || tableIds.includes(d)));
