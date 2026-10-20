@@ -83,7 +83,8 @@ if (DRY) {
     fs.renameSync(DEST, backup);
     console.log(`\nbacked up the previous install to ${show(backup)}`);
   }
-  fs.cpSync(SRC, DEST, { recursive: true });
+  // The master is a git repo: never copy its .git or local clutter into the installed skill.
+  fs.cpSync(SRC, DEST, { recursive: true, filter: (src) => !/[\/](.git|node_modules)([\/]|$)/.test(src) });
   const stamped = stampInstall(DEST);
   console.log(`\ninstalled ${files} files to ${show(DEST)}`);
   console.log(`KIT-SOURCE → ${stamped.master}`);
