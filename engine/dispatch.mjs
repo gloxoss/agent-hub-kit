@@ -142,7 +142,8 @@ function isLive(job, alive) {
   const logPath = path.join(ROOT, job.log);
   let text = '';
   try { text = fs.readFileSync(logPath, 'utf8'); } catch {}
-  if (text.includes('[dispatch] exit')) return false;
+  // Only the runner's own exit line counts: agents often print '[dispatch] exit' when they read other logs.
+  if (/^\[dispatch\] exit/m.test(text)) return false;
   if (alive.has(String(job.pid))) return true;
   try { return Date.now() - fs.statSync(logPath).mtimeMs < RECENT_MS; } catch { return false; }
 }
