@@ -157,3 +157,5 @@ Commands (`node .agent-hub/tools/kit-sync.mjs`):
 **When to run `check`:** at session start; after adding or fixing any hub tool; whenever a DIGEST line contains `KIT-UPGRADE`. If anything is listed, run `propose`, then ask the user one question summarizing the items. Only on yes run `apply --yes` and show the commit commands. If `MASTER-NEWER` items exist, ask whether to `pull --yes`.
 
 **Autoloop hook (document only; engine owns autoloop):** the digest tick can call `kit-sync.mjs check --quiet` and print its line. DIGEST output containing `KIT-UPGRADE` wakes the orchestrator the same way other digest signals do.
+
+**Keep ≥5 agents busy (user rule, 2026-10-25):** never let a session run with fewer than 5 jobs. Keep ≥5 dispatchable OPEN tasks queued beyond the running ones (write the next briefs from the plan before the queue drains; audits/QA passes are fillers). On every accept/done/fail/exit event, count running jobs across active hubs and dispatch the next task immediately until ≥5 run. After a restart, restore infrastructure, then bring the count to ≥5 first.
