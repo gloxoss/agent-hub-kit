@@ -7,10 +7,15 @@
 // Every agent keeps its own safety layer: Claude-family in auto mode, Codex in its workspace
 // sandbox (network on for GitHub/WhatsApp), OpenCode with its configured permissions.
 //
-//   node orch-driver.mjs [repoDir] [--order claude,codex,claude-ag2-gemini] [--no-autoloop]
+//   node orch-driver.mjs [repoDir] [--order a,b,c] [--no-autoloop]      run the driver
 //   node orch-driver.mjs [repoDir] --say "message"     one turn with that message, then exit
+//   node orch-driver.mjs [repoDir] --cmd "status|use <entry>|order a,b|pause|resume|reset|models"
 //
-// Order: --order, else config.json "orchestrator.order", else the default below.
+// An order entry is "<agent>" or "<agent>@<model>", e.g. claude-ag2@claude-sonnet-4-6 then
+// claude-ag2@gemini-3.8-flash-high: each entry fails over on its own, so a down model falls through
+// to the next model of the same lane. Order: /orch override (orch-control.json), else --order, else
+// config.json "orchestrator.order", else the default below. The same commands work from WhatsApp
+// as "/orch status", "/orch use codex@gpt-6", ... (handled here, no agent quota spent).
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -19,10 +24,11 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const argv = process.argv.slice(2);
-if (argv.includes('--help')) { console.log('usage: node orch-driver.mjs [repoDir] [--order a,b,c] [--no-autoloop] [--say "message"]'); process.exit(0); }
+if (argv.includes('--help')) { console.log('usage: node orch-driver.mjs [repoDir] [--order a,b,c] [--no-autoloop] [--say "message"] [--cmd "status|use <entry>|order a,b|pause|resume|reset|models"]'); process.exit(0); }
 const opt = (n) => { const i = argv.indexOf(n); return i >= 0 ? argv.splice(i, 2)[1] : undefined; };
 const orderArg = opt('--order');
 const sayOnce = opt('--say');
+const cmdOnce = opt('--cmd');
 const withAutoloop = !argv.includes('--no-autoloop');
 const ROOT = path.resolve(argv.find((a) => !a.startsWith('--')) ?? '.');
 const HUB = ['.hub', '.agent-hub'].map((d) => path.join(ROOT, d)).find((d) => fs.existsSync(path.join(d, 'config.json')));
@@ -32,7 +38,12 @@ const PLAYBOOK = path.join(KIT, 'engine', 'ORCHESTRATOR.md');
 const REPO = path.basename(ROOT);
 const NODE = (process.env.DEVBOX_NODE || os.hostname()).toLowerCase();
 const CFG = JSON.parse(fs.readFileSync(path.join(HUB, 'config.json'), 'utf8')).orchestrator ?? {};
-const ORDER = (orderArg?.split(',') ?? CFG.order ?? ['claude', 'codex', 'claude-ag2-gemini', 'claude-oc1', 'opencode']).map((s) => s.trim()).filter(Boolean);
+const DEFAULT_ORDER = ['claude', 'codex', 'claude-or', 'claude-ag2@claude-sonnet-4-6', 'claude-ag2@gemini-3.8-flash-high', 'claude-oc1'];
+const BASE_ORDER = (orderArg?.split(',') ?? CFG.order ?? DEFAULT_ORDER).map((s) => s.trim()).filter(Boolean);
+const CONTROL = path.join(HUB, 'orch-control.json');   // /orch overrides: { order?, paused? }
+const control = () => { try { return JSON.parse(fs.readFileSync(CONTROL, 'utf8')); } catch { return {}; } };
+const setControl = (patch) => fs.writeFileSync(CONTROL, JSON.stringify({ ...control(), ...patch }, null, 2));
+const order = () => control().order ?? BASE_ORDER;
 const BATCH_MS = (CFG.batchSeconds ?? 20) * 1000;
 const IDLE_MS = (CFG.idleMinutes ?? 60) * 60_000;
 const DOWN_MS = (CFG.downMinutes ?? 30) * 60_000;
@@ -46,8 +57,10 @@ const LIMIT = /usage limit|rate.?limit|quota|exhausted|insufficient balance|\b40
 // Driver state is per machine: keep it out of git without touching the repo's .gitignore.
 try {
   const ex = path.join(ROOT, '.git', 'info', 'exclude');
-  const rel = path.relative(ROOT, STATE).split(path.sep).join('/');
-  if (!fs.readFileSync(ex, 'utf8').includes(rel)) fs.appendFileSync(ex, `\n${rel}\n`);
+  for (const file of [STATE, CONTROL]) {
+    const rel = path.relative(ROOT, file).split(path.sep).join('/');
+    if (!fs.readFileSync(ex, 'utf8').includes(rel)) fs.appendFileSync(ex, `\n${rel}\n`);
+  }
 } catch { /* worktree or no .git dir */ }
 const st = (() => { try { return JSON.parse(fs.readFileSync(STATE, 'utf8')); } catch { return { sessions: {}, down: {} }; } })();
 const save = () => fs.writeFileSync(STATE, JSON.stringify(st, null, 2));
@@ -56,22 +69,66 @@ const notify = (text) => fs.existsSync(WA) && spawn(process.execPath, [WA, 'send
 const healthy = (a) => !st.down[a] || Date.now() - st.down[a] > DOWN_MS;
 
 // How each CLI family runs one headless turn and resumes the same session next time.
-function command(agent, prompt, sid) {
+function command(entry, prompt, sid) {
+  const [agent, model] = entry.split('@');
   if (agent.startsWith('codex')) {
-    const sandbox = ['--sandbox', 'workspace-write', '-c', 'sandbox_workspace_write.network_access=true'];
-    return sid ? [agent, ['exec', 'resume', ...sandbox, sid, prompt]] : [agent, ['exec', '--skip-git-repo-check', ...sandbox, '-C', ROOT, prompt]];
+    const opts = ['--sandbox', 'workspace-write', '-c', 'sandbox_workspace_write.network_access=true', ...(model ? ['-m', model] : [])];
+    return sid ? [agent, ['exec', 'resume', ...opts, sid, prompt]] : [agent, ['exec', '--skip-git-repo-check', ...opts, '-C', ROOT, prompt]];
   }
-  if (agent === 'opencode') return [agent, ['run', ...(sid ? ['-s', sid] : []), '--format', 'json', prompt]];
+  if (agent === 'opencode') return [agent, ['run', ...(model ? ['-m', model] : []), ...(sid ? ['-s', sid] : []), '--format', 'json', prompt]];
   // claude and claude-* launchers: auto mode keeps the safety review on every action. stream-json
   // makes progress visible, so a hung lane is caught by the silence watchdog instead of the turn limit.
-  return [agent, ['-p', prompt, '--permission-mode', 'auto', '--output-format', 'stream-json', '--verbose',
+  return [agent, ['-p', prompt, '--permission-mode', 'auto', '--output-format', 'stream-json', '--verbose', ...(model ? ['--model', model] : []),
     ...(sid ? ['--resume', sid] : ['--session-id', st.pending = crypto.randomUUID()])]];
 }
-const sessionFrom = (agent, out) => {
+const sessionFrom = (entry, out) => {
+  const agent = entry.split('@')[0];
   if (agent.startsWith('codex')) return out.match(/session id:\s*([0-9a-f-]{36})/i)?.[1];
   if (agent === 'opencode') return out.match(/"sessionID"\s*:\s*"([^"]+)"/)?.[1];
   return st.pending;
 };
+
+// /orch commands from WhatsApp or --cmd: the user steers the driver without spending agent quota.
+async function orchCommand(text) {
+  const [verb = 'status', ...rest] = text.trim().split(/\s+/);
+  const arg = rest.join(' ');
+  const mins = (e) => Math.ceil((DOWN_MS - (Date.now() - st.down[e])) / 60000);
+  switch (verb) {
+    case 'use': {
+      if (!arg) return 'usage: /orch use <agent>[@model]';
+      setControl({ order: [arg, ...order().filter((e) => e !== arg)] });
+      delete st.down[arg]; save();
+      return `next turns use ${arg} first. Order: ${order().join(' → ')}`;
+    }
+    case 'order': {
+      const list = arg.split(/[,\s]+/).filter(Boolean);
+      if (!list.length) return 'usage: /orch order a,b,c   (or "/orch order default")';
+      setControl({ order: list[0] === 'default' ? undefined : list });
+      return `order: ${order().join(' → ')}`;
+    }
+    case 'pause': setControl({ paused: true }); return 'paused: events are kept and handled after /orch resume';
+    case 'resume': setControl({ paused: false }); return 'resumed';
+    case 'reset': st.down = {}; save(); return `every agent marked available again. Order: ${order().join(' → ')}`;
+    case 'models': {
+      const lines = ['Pick with /orch use <agent>@<model>:'];
+      try {
+        const ids = (await (await fetch('http://127.0.0.1:8080/v1/models')).json()).data.map((m) => m.id);
+        lines.push(`claude-ag2@ : ${ids.join(', ')}`);
+      } catch { lines.push('claude-ag2@ : (Antigravity proxy not reachable on this machine)'); }
+      lines.push('codex@ : the models your ChatGPT plan offers (codex: /model), e.g. gpt-6',
+        'opencode@ : provider/model, e.g. opencode-go/glm-5.3-flash (opencode models)',
+        'claude@ : opus, sonnet, haiku (or a full model id)');
+      return lines.join('\n');
+    }
+    default: {
+      const c = control();
+      return [`orchestrator ${REPO} on ${NODE}${c.paused ? ' (PAUSED)' : ''}`,
+        `on duty: ${st.current ?? 'not started yet'}`,
+        `order: ${order().map((e) => (healthy(e) ? e : `${e} (down ${mins(e)}m)`)).join(' → ')}`,
+        'commands: /orch status | use <agent>[@model] | order a,b,c | pause | resume | reset | models'].join('\n');
+    }
+  }
+}
 
 function turn(agent, prompt) {
   return new Promise((resolve) => {
@@ -108,7 +165,7 @@ async function handle(events) {
   busy = true;
   const body = `EVENTS:\n${events.join('\n')}`;
   let takeover = null;
-  for (const agent of ORDER.filter(healthy)) {
+  for (const agent of order().filter(healthy)) {
     const fresh = !st.sessions[agent];
     const prompt = fresh || takeover ? `${bootstrap(agent, takeover)}\n\n${body}` : `${body}\n\nHandle these per the playbook; update docs/HANDOFF.md before you finish.`;
     log(`turn → ${agent}${fresh ? ' (new session)' : ''}: ${events.length} event(s)`);
@@ -126,7 +183,7 @@ async function handle(events) {
     st.down[agent] = Date.now();
     delete st.sessions[agent];   // start clean next time: the old session may be what failed
     save();
-    const next = ORDER.filter(healthy)[0];
+    const next = order().filter(healthy)[0];
     log(`${agent} unavailable (${why}); next: ${next ?? 'none'}`);
     notify(next ? `Orchestrator switch: ${agent} is unavailable (${why}); ${next} takes over.` : `Orchestrator paused: every agent is unavailable (last: ${agent}, ${why}). Retrying in ${DOWN_MS / 60000} min.`);
     takeover = agent;
@@ -138,7 +195,7 @@ async function handle(events) {
 const push = (line) => { lastEvent = Date.now(); queue.push(line); };
 
 setInterval(() => {
-  if (busy) return;
+  if (busy || control().paused) return;
   if (!queue.length && Date.now() - lastEvent > IDLE_MS) push(`TICK ${new Date().toISOString().slice(11, 16)}: no events for ${IDLE_MS / 60000} min; check the hub and keep lanes busy within quota.`);
   if (queue.length) { const batch = queue; queue = []; handle(batch); }
 }, BATCH_MS);
@@ -154,11 +211,22 @@ function follow(name, cmd, args, filter = () => true) {
   child.on('close', (code) => { log(`${name} stopped (${code}); restarting in 10s`); setTimeout(() => follow(name, cmd, args, filter), 10_000); });
 }
 
+if (cmdOnce) {
+  console.log(await orchCommand(cmdOnce));
+  process.exit(0);
+}
 if (sayOnce) {
   await handle([`USER (terminal): ${sayOnce}`]);
   process.exit(0);
 }
-log(`driver up for ${REPO} on ${NODE}; order: ${ORDER.join(' → ')}`);
+log(`driver up for ${REPO} on ${NODE}; order: ${order().join(' → ')}`);
 if (withAutoloop) follow('autoloop', process.execPath, [path.join(HUB, 'autoloop.mjs')]);
-if (fs.existsSync(WA)) follow('whatsapp', process.execPath, [WA, 'inbox'], (l) => l.startsWith('WHATSAPP'));
+// "/orch ..." messages steer the driver itself; every other user message goes to the agent on duty.
+if (fs.existsSync(WA)) follow('whatsapp', process.execPath, [WA, 'inbox'], (l) => {
+  if (!l.startsWith('WHATSAPP')) return false;
+  const m = l.match(/^WHATSAPP \d\d:\d\d: \/orch\b\s*(.*)$/i);
+  if (!m) return true;
+  orchCommand(m[1]).then((reply) => { log(`/orch ${m[1]} -> ${reply.split('\n')[0]}`); notify(reply); });
+  return false;
+});
 push('START: the driver just started. Load context, post one short WhatsApp status line, then continue.');
