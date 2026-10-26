@@ -191,3 +191,7 @@ Format: symptom, cause, fix. Entries are grouped by the part of the loop they co
 - **Quota cascades.** One provider window (Antigravity Claude) backs several executors (Sonnet, agy). When it empties, mark all of them down together and move work to independent providers (DeepSeek slots).
 
 - **opencode cannot read outside the workspace.** Symptom: "user rejected permission" on reads of a sibling folder (specs in ../). Cause: opencode external_directory permission in headless runs. Fix: keep tasks that read outside the repo off opencode, or copy the inputs into the repo first.
+
+- **Shared opencode server is a single point of failure.** Symptom: every attached opencode job fails at once with ECONNRESET, misread as QUOTA, and opencode gets parked. Cause: the `opencode serve` window was interrupted. Fix: run opencode jobs standalone by default; use the server only for watching, and never classify ECONNRESET as quota.
+
+- **Tailwind arbitrary selectors with an escaped slash break the whole CSS build.** Symptom: "Parsing CSS source code failed ... Unexpected token Delim(/)" on every page. Cause: a class like `[&_.group\/media]:h-[240px]` in a JS string (Tailwind scans the raw source). Fix: target a data attribute instead (`[&_[data-media]]`), and restart the dev server with a clean cache because the error stays cached.

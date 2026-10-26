@@ -67,7 +67,7 @@ const sessionFrom = (agent, out) => {
 function turn(agent, prompt) {
   return new Promise((resolve) => {
     const [cmd, args] = command(agent, prompt, st.sessions[agent]);
-    const child = spawn(cmd, args, { cwd: ROOT, env: { ...process.env, AGENT_PROJECT: REPO }, windowsHide: true, shell: process.platform === 'win32' });
+    const child = spawn(cmd, args, { cwd: ROOT, env: { ...process.env, AGENT_PROJECT: REPO }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, shell: process.platform === 'win32' });  // no stdin: CLIs wait on an open pipe
     let out = '';
     const take = (d) => { out += d; fs.appendFileSync(LOG, d); };
     child.stdout.on('data', take);
