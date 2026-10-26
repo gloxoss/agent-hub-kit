@@ -41,7 +41,7 @@ const SILENCE_MS = (CFG.silenceMinutes ?? 5) * 60_000;
 const STATE = path.join(HUB, 'orch-driver.json');
 const LOG = path.join(HUB, 'runs', 'orchestrator.log');
 const WA = path.join(os.homedir(), '.config', 'waha', 'wa.mjs');
-const LIMIT = /usage limit|rate.?limit|quota|exhausted|insufficient balance|\b402\b|\b429\b|unauthori[sz]ed|invalid bearer|not logged in|credits?\b|overloaded/i;
+const LIMIT = /usage limit|rate.?limit|quota|exhausted|insufficient balance|\b402\b|\b429\b|unauthori[sz]ed|invalid bearer|not logged in|credits?\b|overloaded|expired|no output for \d+ min/i;
 
 // Driver state is per machine: keep it out of git without touching the repo's .gitignore.
 try {
