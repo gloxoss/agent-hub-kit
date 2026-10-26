@@ -6,7 +6,7 @@ Depends on: {{deps}}. Allowed scope: {{scope}}.
 One or two sentences: what exists when this is done.
 
 ## Load (just in time, nothing else)
-- `.agent-hub/PROTOCOL.md` (if not read this session)
+- `{{HUB_DIR}}/PROTOCOL.md` (if not read this session)
 - Inputs: exact paths (audit doc section, existing files to reuse)
 
 ## Scope

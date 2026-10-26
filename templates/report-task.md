@@ -8,10 +8,10 @@ Allowed scope: `docs/reports/<date>-session-report.md`, `docs/reports/PROJECT-OV
 The user is pausing this project. Write the documents they and any future agent need to understand everything that exists and what remains, without reading the chat.
 
 ## Load (just in time, nothing else)
-- The hub: `.agent-hub/events.jsonl` (every task added, claimed, done, accepted, rejected, with timestamps), `.agent-hub/CHANGELOG.md` (worker reports), `.agent-hub/runs/jobs.jsonl` and the `.agent-hub/runs/*.log` tails (which executor ran which job, and token/cost figures where the logs carry them).
+- The hub: `{{HUB_DIR}}/events.jsonl` (every task added, claimed, done, accepted, rejected, with timestamps), `{{HUB_DIR}}/CHANGELOG.md` (worker reports), `{{HUB_DIR}}/runs/jobs.jsonl` and the `{{HUB_DIR}}/runs/*.log` tails (which executor ran which job, and token/cost figures where the logs carry them).
 - Git: `git log --stat --since=<start date>` (commits).
 - Project docs: `AGENTS.md`, the system docs, the migration/decisions ledger and handoff, the plans, the verify reports.
-- Quota: run `node .agent-hub/quota.mjs` once for the current snapshot (copy status lines only; never a key).
+- Quota: run `node {{HUB_DIR}}/quota.mjs` once for the current snapshot (copy status lines only; never a key).
 
 ## Steps
 1. Write `docs/reports/PROJECT-OVERVIEW.md`, the stable map: purpose, project tree with one line per folder, how the system works, routes or entry points, and the agent workflow (orchestrator, hub, dispatcher, autoloop, reviewer chain, stop rule, executors, quota audit).
