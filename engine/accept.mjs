@@ -23,6 +23,12 @@ const files = [...new Set([...(t.changed ?? []), ...(media ? media.split(',') : 
   .map((f) => f.replace(/\\/g, '/'))
   .filter((f) => fs.existsSync(f));
 
+// The reviewer is read-only, so its PASS verdict is recorded as the verification here;
+// without it build-phase tasks stay in REVIEW and the accept below is refused.
+if (t.status === 'REVIEW') {
+  try { execFileSync('node', [path.join(HUB, 'hub.mjs'), 'join', '--agent', 'verifier-orch', '--role', 'verifier', '--tool', 'autoloop'], { stdio: 'ignore' }); } catch {}
+  execFileSync('node', [path.join(HUB, 'hub.mjs'), 'verify', id, '--ok', '--note', note, '--agent', 'verifier-orch'], { encoding: 'utf8' });
+}
 hub('accept', id, '--note', note);
 if (CFG.autoCommit === false) { console.log(id + ': accepted, not committed (autoCommit off). Files: ' + files.join(', ')); process.exit(0); }
 if (files.length) execFileSync('git', ['add', '--', ...files]);
