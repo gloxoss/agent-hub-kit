@@ -66,14 +66,27 @@ const st = (() => { try { return JSON.parse(fs.readFileSync(STATE, 'utf8')); } c
 const save = () => fs.writeFileSync(STATE, JSON.stringify(st, null, 2));
 const log = (s) => { const line = `${new Date().toISOString().slice(5, 19)} ${s}`; console.log(line); fs.mkdirSync(path.dirname(LOG), { recursive: true }); fs.appendFileSync(LOG, line + '\n'); };
 const notify = (text) => fs.existsSync(WA) && spawn(process.execPath, [WA, 'send', text], { cwd: ROOT, stdio: 'ignore', windowsHide: true });
-const healthy = (a) => !st.down[a] || Date.now() - st.down[a] > DOWN_MS;
+st.until ??= {};
+const healthy = (a) => !(st.until[a] > Date.now());
+// How long an entry stays down: missing command 24h, a stated reset time until then, else DOWN_MS.
+function downFor(r) {
+  if (r.code === -1 && /ENOENT|not found/i.test(r.out)) return 24 * 60 * 60_000;
+  const m = r.out.match(/resets (?:at )?(\d{1,2})(?::(\d\d))?\s*(am|pm)/i);
+  if (m) {
+    const t = new Date(); let h = Number(m[1]) % 12 + (m[3].toLowerCase() === 'pm' ? 12 : 0);
+    t.setHours(h, Number(m[2] ?? 0), 0, 0); if (t < Date.now()) t.setDate(t.getDate() + 1);
+    return Math.max(t - Date.now(), 60_000);
+  }
+  return DOWN_MS;
+}
+const until = (e) => new Date(st.until[e]).toTimeString().slice(0, 5);
 
 // How each CLI family runs one headless turn and resumes the same session next time.
 function command(entry, prompt, sid) {
   const [agent, model] = entry.split('@');
   if (agent.startsWith('codex')) {
-    const opts = ['--sandbox', 'workspace-write', '-c', 'sandbox_workspace_write.network_access=true', ...(model ? ['-m', model] : [])];
-    return sid ? [agent, ['exec', 'resume', ...opts, sid, prompt]] : [agent, ['exec', '--skip-git-repo-check', ...opts, '-C', ROOT, prompt]];
+    const opts = ['-c', 'sandbox_mode="workspace-write"', '-c', 'sandbox_workspace_write.network_access=true', '--skip-git-repo-check', ...(model ? ['-m', model] : [])];
+    return sid ? [agent, ['exec', 'resume', ...opts, sid, prompt]] : [agent, ['exec', ...opts, '-C', ROOT, prompt]];
   }
   if (agent === 'opencode') return [agent, ['run', ...(model ? ['-m', model] : []), ...(sid ? ['-s', sid] : []), '--format', 'json', prompt]];
   // claude and claude-* launchers: auto mode keeps the safety review on every action. stream-json
@@ -92,17 +105,17 @@ const sessionFrom = (entry, out) => {
 async function orchCommand(text) {
   const [verb = 'status', ...rest] = text.trim().split(/\s+/);
   const arg = rest.join(' ');
-  const mins = (e) => Math.ceil((DOWN_MS - (Date.now() - st.down[e])) / 60000);
+  const mins = (e) => Math.ceil((st.until[e] - Date.now()) / 60000);
   // WhatsApp-friendly: one entry per line, ✅ ready / ⛔ down, "agent · model".
   const pretty = (e) => e.replace('@', ' · ');
-  const list = () => order().map((e, i) => `${i + 1}. ${healthy(e) ? '✅' : '⛔'} ${pretty(e)}${healthy(e) ? '' : `  (down ${mins(e)}m)`}`).join('\n');
+  const list = () => order().map((e, i) => `${i + 1}. ${healthy(e) ? '✅' : '⛔'} ${pretty(e)}${healthy(e) ? '' : `  (down until ${until(e)})`}`).join('\n');
   const onDuty = () => order().find(healthy);
   const HELP = '_/orch status · use · order · models · pause · resume · reset_';
   switch (verb) {
     case 'use': {
       if (!arg) return 'Usage: /orch use <agent>[@model]\ne.g. /orch use claude-ag2@gemini-3.8-flash-high';
       setControl({ order: [arg, ...order().filter((e) => e !== arg)] });
-      delete st.down[arg]; save();
+      delete st.until[arg]; save();
       return `👉 Next turn: *${pretty(arg)}*\nOrder:\n${list()}`;
     }
     case 'order': {
@@ -113,7 +126,7 @@ async function orchCommand(text) {
     }
     case 'pause': setControl({ paused: true }); return '⏸️ Paused. Events are kept and handled after /orch resume.';
     case 'resume': setControl({ paused: false }); return `▶️ Resumed. On duty: *${pretty(onDuty() ?? 'none')}*`;
-    case 'reset': st.down = {}; save(); return `♻️ Every agent marked ready again.\nOrder:\n${list()}`;
+    case 'reset': st.until = {}; save(); return `♻️ Every agent marked ready again.\nOrder:\n${list()}`;
     case 'models': {
       const lines = ['*Models* (pick with /orch use <agent>@<model>)'];
       try {
@@ -135,7 +148,7 @@ async function orchCommand(text) {
 function turn(agent, prompt) {
   return new Promise((resolve) => {
     const [cmd, args] = command(agent, prompt, st.sessions[agent]);
-    const child = spawn(cmd, args, { cwd: ROOT, env: { ...process.env, AGENT_PROJECT: REPO }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, shell: process.platform === 'win32' });  // no stdin: CLIs wait on an open pipe
+    const child = spawn(cmd, args, { cwd: ROOT, env: { ...process.env, AGENT_PROJECT: REPO, PATH: [path.join(os.homedir(), '.claude-launchers'), path.join(os.homedir(), '.local', 'bin'), process.env.PATH].join(path.delimiter) }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, shell: process.platform === 'win32' });  // no stdin: CLIs wait on an open pipe
     let out = '';
     let quietSince = Date.now();
     const take = (d) => { out += d; quietSince = Date.now(); fs.appendFileSync(LOG, d); };
@@ -167,6 +180,7 @@ async function handle(events) {
   busy = true;
   const body = `EVENTS:\n${events.join('\n')}`;
   let takeover = null;
+  const failed = [];
   for (const agent of order().filter(healthy)) {
     const fresh = !st.sessions[agent];
     const prompt = fresh || takeover ? `${bootstrap(agent, takeover)}\n\n${body}` : `${body}\n\nHandle these per the playbook; update docs/HANDOFF.md before you finish.`;
@@ -178,17 +192,27 @@ async function handle(events) {
       st.current = agent;
       save();
       log(`turn ok (${agent})`);
+      if (failed.length) notify(`⚠️ Switched to *${agent.replace('@', ' · ')}*\n${failed.join('\n')}`);
+      st.pausedNote = null; save();
       busy = false;
       return;
     }
     const why = (r.out.match(LIMIT)?.[0] ?? `exit ${r.code}`).slice(0, 60);
-    st.down[agent] = Date.now();
+    st.until[agent] = Date.now() + downFor(r);
     delete st.sessions[agent];   // start clean next time: the old session may be what failed
     save();
-    const next = order().filter(healthy)[0];
-    log(`${agent} unavailable (${why}); next: ${next ?? 'none'}`);
-    notify(next ? `Orchestrator switch: ${agent} is unavailable (${why}); ${next} takes over.` : `Orchestrator paused: every agent is unavailable (last: ${agent}, ${why}). Retrying in ${DOWN_MS / 60000} min.`);
+    const reason = r.code === -1 && /ENOENT/i.test(r.out) ? 'not installed here' : why;
+    failed.push(`⛔ ${agent.replace('@', ' · ')}: ${reason} (until ${until(agent)})`);
+    log(`${agent} unavailable (${reason}) until ${until(agent)}; next: ${order().filter(healthy)[0] ?? 'none'}`);
     takeover = agent;
+  }
+  // Nobody could take it. Say so once (not again until something changes or 3 hours pass).
+  if (failed.length) {
+    const next = Math.min(...order().map((e) => st.until[e] ?? Infinity));
+    const note = `⏸️ No agent available right now, I retry at ${new Date(next).toTimeString().slice(0, 5)}.\n${failed.join('\n')}`;
+    if (st.pausedNote?.text !== note.split('\n')[0] || Date.now() - st.pausedNote.at > 3 * 3600_000) {
+      notify(note); st.pausedNote = { text: note.split('\n')[0], at: Date.now() }; save();
+    }
   }
   busy = false;
   queue.unshift(...events);   // nobody could take it: keep it for the retry
