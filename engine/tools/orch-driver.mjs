@@ -37,6 +37,7 @@ const BATCH_MS = (CFG.batchSeconds ?? 20) * 1000;
 const IDLE_MS = (CFG.idleMinutes ?? 60) * 60_000;
 const DOWN_MS = (CFG.downMinutes ?? 30) * 60_000;
 const TURN_MS = (CFG.turnMinutes ?? 30) * 60_000;
+const SILENCE_MS = (CFG.silenceMinutes ?? 5) * 60_000;
 const STATE = path.join(HUB, 'orch-driver.json');
 const LOG = path.join(HUB, 'runs', 'orchestrator.log');
 const WA = path.join(os.homedir(), '.config', 'waha', 'wa.mjs');
@@ -61,8 +62,10 @@ function command(agent, prompt, sid) {
     return sid ? [agent, ['exec', 'resume', ...sandbox, sid, prompt]] : [agent, ['exec', '--skip-git-repo-check', ...sandbox, '-C', ROOT, prompt]];
   }
   if (agent === 'opencode') return [agent, ['run', ...(sid ? ['-s', sid] : []), '--format', 'json', prompt]];
-  // claude and claude-* launchers: auto mode keeps the safety review on every action.
-  return [agent, ['-p', prompt, '--permission-mode', 'auto', ...(sid ? ['--resume', sid] : ['--session-id', st.pending = crypto.randomUUID()])]];
+  // claude and claude-* launchers: auto mode keeps the safety review on every action. stream-json
+  // makes progress visible, so a hung lane is caught by the silence watchdog instead of the turn limit.
+  return [agent, ['-p', prompt, '--permission-mode', 'auto', '--output-format', 'stream-json', '--verbose',
+    ...(sid ? ['--resume', sid] : ['--session-id', st.pending = crypto.randomUUID()])]];
 }
 const sessionFrom = (agent, out) => {
   if (agent.startsWith('codex')) return out.match(/session id:\s*([0-9a-f-]{36})/i)?.[1];
@@ -75,12 +78,18 @@ function turn(agent, prompt) {
     const [cmd, args] = command(agent, prompt, st.sessions[agent]);
     const child = spawn(cmd, args, { cwd: ROOT, env: { ...process.env, AGENT_PROJECT: REPO }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, shell: process.platform === 'win32' });  // no stdin: CLIs wait on an open pipe
     let out = '';
-    const take = (d) => { out += d; fs.appendFileSync(LOG, d); };
+    let quietSince = Date.now();
+    const take = (d) => { out += d; quietSince = Date.now(); fs.appendFileSync(LOG, d); };
     child.stdout.on('data', take);
     child.stderr.on('data', take);
     const timer = setTimeout(() => child.kill('SIGTERM'), TURN_MS);
-    child.on('error', (e) => { clearTimeout(timer); resolve({ code: -1, out: String(e.message) }); });
-    child.on('close', (code) => { clearTimeout(timer); resolve({ code, out }); });
+    // An agent that prints nothing for SILENCE_MS is stuck (e.g. its provider keeps rate-limiting): fail over.
+    const watchdog = setInterval(() => {
+      if (Date.now() - quietSince > SILENCE_MS) { out += `\n[driver] no output for ${SILENCE_MS / 60000} min: rate limit or hang\n`; child.kill('SIGTERM'); }
+    }, 15_000);
+    const done = (code, text) => { clearTimeout(timer); clearInterval(watchdog); resolve({ code, out: text }); };
+    child.on('error', (e) => done(-1, String(e.message)));
+    child.on('close', (code) => done(code, out));
   });
 }
 
