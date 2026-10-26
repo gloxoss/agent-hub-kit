@@ -93,39 +93,41 @@ async function orchCommand(text) {
   const [verb = 'status', ...rest] = text.trim().split(/\s+/);
   const arg = rest.join(' ');
   const mins = (e) => Math.ceil((DOWN_MS - (Date.now() - st.down[e])) / 60000);
+  // WhatsApp-friendly: one entry per line, ✅ ready / ⛔ down, "agent · model".
+  const pretty = (e) => e.replace('@', ' · ');
+  const list = () => order().map((e, i) => `${i + 1}. ${healthy(e) ? '✅' : '⛔'} ${pretty(e)}${healthy(e) ? '' : `  (down ${mins(e)}m)`}`).join('\n');
+  const onDuty = () => order().find(healthy);
+  const HELP = '_/orch status · use · order · models · pause · resume · reset_';
   switch (verb) {
     case 'use': {
-      if (!arg) return 'usage: /orch use <agent>[@model]';
+      if (!arg) return 'Usage: /orch use <agent>[@model]\ne.g. /orch use claude-ag2@gemini-3.8-flash-high';
       setControl({ order: [arg, ...order().filter((e) => e !== arg)] });
       delete st.down[arg]; save();
-      return `next turns use ${arg} first. Order: ${order().join(' → ')}`;
+      return `👉 Next turn: *${pretty(arg)}*\nOrder:\n${list()}`;
     }
     case 'order': {
-      const list = arg.split(/[,\s]+/).filter(Boolean);
-      if (!list.length) return 'usage: /orch order a,b,c   (or "/orch order default")';
-      setControl({ order: list[0] === 'default' ? undefined : list });
-      return `order: ${order().join(' → ')}`;
+      const items = arg.split(/[,\s]+/).filter(Boolean);
+      if (!items.length) return 'Usage: /orch order a,b,c   (or /orch order default)';
+      setControl({ order: items[0] === 'default' ? undefined : items });
+      return `🔁 New order:\n${list()}`;
     }
-    case 'pause': setControl({ paused: true }); return 'paused: events are kept and handled after /orch resume';
-    case 'resume': setControl({ paused: false }); return 'resumed';
-    case 'reset': st.down = {}; save(); return `every agent marked available again. Order: ${order().join(' → ')}`;
+    case 'pause': setControl({ paused: true }); return '⏸️ Paused. Events are kept and handled after /orch resume.';
+    case 'resume': setControl({ paused: false }); return `▶️ Resumed. On duty: *${pretty(onDuty() ?? 'none')}*`;
+    case 'reset': st.down = {}; save(); return `♻️ Every agent marked ready again.\nOrder:\n${list()}`;
     case 'models': {
-      const lines = ['Pick with /orch use <agent>@<model>:'];
+      const lines = ['*Models* (pick with /orch use <agent>@<model>)'];
       try {
         const ids = (await (await fetch('http://127.0.0.1:8080/v1/models')).json()).data.map((m) => m.id);
-        lines.push(`claude-ag2@ : ${ids.join(', ')}`);
-      } catch { lines.push('claude-ag2@ : (Antigravity proxy not reachable on this machine)'); }
-      lines.push('codex@ : the models your ChatGPT plan offers (codex: /model), e.g. gpt-6',
-        'opencode@ : provider/model, e.g. opencode-go/glm-5.3-flash (opencode models)',
-        'claude@ : opus, sonnet, haiku (or a full model id)');
+        lines.push('', '*claude-ag2@*', ...ids.map((id) => `• ${id}`));
+      } catch { lines.push('', '*claude-ag2@*', '• (Antigravity proxy not reachable here)'); }
+      lines.push('', '*claude@*', '• opus · sonnet · haiku', '', '*codex@*', '• a model of your ChatGPT plan, e.g. gpt-6',
+        '', '*opencode@*', '• provider/model, e.g. opencode-go/glm-5.3-flash');
       return lines.join('\n');
     }
     default: {
       const c = control();
-      return [`orchestrator ${REPO} on ${NODE}${c.paused ? ' (PAUSED)' : ''}`,
-        `on duty: ${st.current ?? 'not started yet'}`,
-        `order: ${order().map((e) => (healthy(e) ? e : `${e} (down ${mins(e)}m)`)).join(' → ')}`,
-        'commands: /orch status | use <agent>[@model] | order a,b,c | pause | resume | reset | models'].join('\n');
+      return [`${c.paused ? '⏸️ *Paused*\n' : ''}On duty: *${pretty(onDuty() ?? 'none available')}*${st.current && st.current !== onDuty() ? `  (last turn: ${pretty(st.current)})` : ''}`,
+        'Order:', list(), HELP].join('\n');
     }
   }
 }
