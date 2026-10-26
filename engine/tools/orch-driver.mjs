@@ -42,6 +42,12 @@ const LOG = path.join(HUB, 'runs', 'orchestrator.log');
 const WA = path.join(os.homedir(), '.config', 'waha', 'wa.mjs');
 const LIMIT = /usage limit|rate.?limit|quota|exhausted|insufficient balance|\b402\b|\b429\b|unauthori[sz]ed|invalid bearer|not logged in|credits?\b|overloaded/i;
 
+// Driver state is per machine: keep it out of git without touching the repo's .gitignore.
+try {
+  const ex = path.join(ROOT, '.git', 'info', 'exclude');
+  const rel = path.relative(ROOT, STATE).split(path.sep).join('/');
+  if (!fs.readFileSync(ex, 'utf8').includes(rel)) fs.appendFileSync(ex, `\n${rel}\n`);
+} catch { /* worktree or no .git dir */ }
 const st = (() => { try { return JSON.parse(fs.readFileSync(STATE, 'utf8')); } catch { return { sessions: {}, down: {} }; } })();
 const save = () => fs.writeFileSync(STATE, JSON.stringify(st, null, 2));
 const log = (s) => { const line = `${new Date().toISOString().slice(5, 19)} ${s}`; console.log(line); fs.mkdirSync(path.dirname(LOG), { recursive: true }); fs.appendFileSync(LOG, line + '\n'); };
