@@ -103,8 +103,11 @@ const sessionFrom = (entry, out) => {
 
 // /orch commands from WhatsApp or --cmd: the user steers the driver without spending agent quota.
 async function orchCommand(text) {
+  // "agent · model" (as the lists display it) and "agent@model" mean the same entry.
+  const norm = (e) => e.trim().replace(/\s*·\s*/g, '@').replace(/\s+/g, '');
   const [verb = 'status', ...rest] = text.trim().split(/\s+/);
-  const arg = rest.join(' ');
+  const arg = norm(rest.join(' '));
+  if (control().order?.some((e) => e !== norm(e))) setControl({ order: [...new Set(control().order.map(norm))] });
   const mins = (e) => Math.ceil((st.until[e] - Date.now()) / 60000);
   // WhatsApp-friendly: one entry per line, ✅ ready / ⛔ down, "agent · model".
   const pretty = (e) => e.replace('@', ' · ');
@@ -119,7 +122,7 @@ async function orchCommand(text) {
       return `👉 Next turn: *${pretty(arg)}*\nOrder:\n${list()}`;
     }
     case 'order': {
-      const items = arg.split(/[,\s]+/).filter(Boolean);
+      const items = rest.join(' ').split(',').map(norm).filter(Boolean);
       if (!items.length) return 'Usage: /orch order a,b,c   (or /orch order default)';
       setControl({ order: items[0] === 'default' ? undefined : items });
       return `🔁 New order:\n${list()}`;
