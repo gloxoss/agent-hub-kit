@@ -3,6 +3,7 @@
 // a verifier who is not the worker checks the result. State is an append-only event log.
 // Usage: node .agent-hub/hub.mjs <command> [args]   (run from the repo root, Node 20+)
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -46,8 +47,11 @@ function readEvents() {
   if (!fs.existsSync(EVENTS)) return [];
   return fs.readFileSync(EVENTS, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
 }
+// Every event names the machine that wrote it, so the shared board (board.mjs) knows which
+// machine's log is the live one for each task when several machines work on one repo.
+const NODE = (process.env.DEVBOX_NODE || os.hostname()).toLowerCase();
 function emit(type, data) {
-  const ev = { t: now(), type, agent: me ?? null, ...data };
+  const ev = { t: now(), type, agent: me ?? null, node: NODE, ...data };
   fs.appendFileSync(EVENTS, JSON.stringify(ev) + '\n');
   return ev;
 }

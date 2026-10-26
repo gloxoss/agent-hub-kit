@@ -10,7 +10,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -230,6 +230,21 @@ function tick(st) {
         if (!/not dispatched|no free lane|^ERROR /im.test(out)) return;
       }
     });
+  }
+
+  // Shared board: mirror this machine's live tasks to GitHub issues every few minutes, in the
+  // background so a slow GitHub never stalls the loop.
+  if (CFG.board?.enabled && Date.now() - (st.lastBoardSync ?? 0) > (CFG.board.syncMinutes ?? 3) * 60_000) {
+    st.lastBoardSync = Date.now();
+    spawn(process.execPath, [path.join(ROOT, HUB, 'board.mjs'), 'sync'], { cwd: ROOT, stdio: 'ignore', detached: true, windowsHide: true }).unref();
+  }
+
+  // Multi-machine sync: shared memory branch + safe pull/push of the code (sync.mjs). Only problems
+  // are surfaced, so a quiet loop means every machine is in step.
+  if (CFG.sync?.enabled && Date.now() - (st.lastSync ?? 0) > (CFG.sync.minutes ?? 5) * 60_000) {
+    st.lastSync = Date.now();
+    const r = spawnSync(process.execPath, [path.join(ROOT, HUB, 'sync.mjs'), 'run'], { cwd: ROOT, encoding: 'utf8', timeout: 120_000, windowsHide: true });
+    for (const line of `${r.stdout ?? ''}`.split('\n')) if (/failed|blocked|diverged|conflict/.test(line)) say(line);
   }
 
   if (Date.now() - st.lastDigest > DIGEST_MS) {

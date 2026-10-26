@@ -42,7 +42,7 @@ function tree(src, dest, template = false) {
   }
 }
 console.log('Scaffolding ' + opt.name + ' (pack: ' + opt.pack + ') in ' + TARGET);
-for (const name of ['hub.mjs', 'dispatch.mjs', 'autoloop.mjs', 'quota.mjs', 'accept.mjs', 'executors.json']) write(path.join(HUB, name), fs.readFileSync(path.join(HERE, name)));
+for (const name of ['hub.mjs', 'dispatch.mjs', 'autoloop.mjs', 'quota.mjs', 'accept.mjs', 'board.mjs', 'sync.mjs', 'executors.json']) write(path.join(HUB, name), fs.readFileSync(path.join(HERE, name)));
 write(path.join(HUB, 'config.json'), JSON.stringify({ ...defaults, hubDir: HUB_DIR }, null, 2) + '\n');
 tree(path.join(HERE, 'tools'), path.join(HUB, 'tools'));
 write(path.join(HUB, 'events.jsonl'), '');

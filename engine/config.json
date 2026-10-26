@@ -47,5 +47,13 @@
   },
   "autoCommit": true,
   "planners": "^M-",
-  "notifyVisible": null
+  "notifyVisible": null,
+  "board": {
+    "syncMinutes": 3,
+    "enabled": false
+  },
+  "sync": {
+    "minutes": 5,
+    "enabled": false
+  }
 }

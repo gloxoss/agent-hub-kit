@@ -344,6 +344,17 @@ if (mode === '_runner') {
   if (!executor || !laneArg || !taskIds.length) throw new Error('usage: run <executor> <laneId|auto> <taskId> [taskId ...]');
   if (!enabled(executor)) throw new Error(`executor "${executor}" is not available (missing from executors.json or its launcher is missing)`);
   if (laneArg !== 'auto' && taskIds.length > 1) throw new Error('a fixed lane takes one task; use auto for several');
+  // Shared board: when several machines work on this repo, a task runs only on the machine that
+  // claimed it on GitHub first (board.mjs claim exits 3 when another machine owns it).
+  if (CFG.board?.enabled) {
+    for (const id of [...taskIds]) {
+      const c = spawnSync(process.execPath, [path.join(HUB, 'board.mjs'), 'claim', id], { cwd: ROOT, encoding: 'utf8', windowsHide: true });
+      if (c.status === 0) continue;
+      console.log(`not dispatched: ${id} ${c.status === 3 ? (c.stdout.trim() || 'is owned by another machine') : `board claim failed: ${(c.stderr || c.stdout).trim().slice(0, 200)}`}`);
+      taskIds.splice(taskIds.indexOf(id), 1);
+    }
+    if (!taskIds.length) process.exit(0);
+  }
   const budgets = CFG.dailyJobLimit ?? {};
   const group = Object.keys(budgets).find((g) => new RegExp(`^${g.replace('*', '.*')}$`).test(executor));
   if (group) {
