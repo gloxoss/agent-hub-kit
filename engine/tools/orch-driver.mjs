@@ -78,6 +78,8 @@ const healthy = (a) => !(st.until[a] > Date.now());
 // How long an entry stays down: missing command 24h, a stated reset time until then, else DOWN_MS.
 function downFor(r) {
   if (r.code === -1 && /ENOENT|not found/i.test(r.out)) return 24 * 60 * 60_000;
+  const minMatch = r.out.match(/resets? (?:in|after) (\d+)\s*m/i);
+  if (minMatch) return (Number(minMatch[1]) + 1) * 60_000;
   const m = r.out.match(/resets (?:at )?(\d{1,2})(?::(\d\d))?\s*(am|pm)/i);
   if (m) {
     const t = new Date(); let h = Number(m[1]) % 12 + (m[3].toLowerCase() === 'pm' ? 12 : 0);
