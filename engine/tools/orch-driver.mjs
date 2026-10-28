@@ -38,7 +38,14 @@ const PLAYBOOK = path.join(KIT, 'engine', 'ORCHESTRATOR.md');
 const REPO = path.basename(ROOT);
 const NODE = (process.env.DEVBOX_NODE || os.hostname()).toLowerCase();
 const CFG = JSON.parse(fs.readFileSync(path.join(HUB, 'config.json'), 'utf8')).orchestrator ?? {};
-const DEFAULT_ORDER = ['claude', 'claude-ag2@gemini-3-flash', 'claude-ag2@gemini-3.8-flash-tiered', 'claude-kie', 'codex-kie', 'claude-ag2@claude-sonnet-4-6', 'codex'];
+const DEFAULT_ORDER = [
+  'claude',
+  'claude-ag2@claude-sonnet-4-6',
+  'claude-kie',
+  'claude-ag2@gemini-3-flash',
+  'claude-ag2@gemini-3.8-flash-tiered',
+  'codex'
+];
 const BASE_ORDER = (orderArg?.split(',') ?? CFG.order ?? DEFAULT_ORDER).map((s) => s.trim()).filter(Boolean);
 const CONTROL = path.join(HUB, 'orch-control.json');   // /orch overrides: { order?, paused? }
 const control = () => { try { return JSON.parse(fs.readFileSync(CONTROL, 'utf8')); } catch { return {}; } };
