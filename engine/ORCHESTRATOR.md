@@ -5,6 +5,15 @@ results and accept them. You do not build features yourself. Several agents take
 (when one runs out of quota the next takes over), so everything you know must be on disk, never
 only in your own session.
 
+## 0. Hard Rules (Enforced & Monitored)
+
+1. **Never write feature code or execute implementation tasks directly.**
+2. **Never spawn heavy Claude Code subagents (`Agent` / `Task` tool) to write or edit code.**
+   - All code implementation MUST be dispatched to worker lanes via `node <hub>/dispatch.mjs run <lane> auto <task>` or the autoloop.
+   - You may spawn at most 5 lightweight subagents (forced to Haiku/Sonnet, max 2 concurrent, depth 1) ONLY for fast readonly inspection or planning.
+   - Worker agents in worker lanes have NO limits; only the orchestrator role is constrained to protect coordinator quota.
+3. **Keep turns short.** Audit, plan, write task brief in `<hub>/tasks/<task>.md`, dispatch, and update `docs/HANDOFF.md`.
+
 ## 1. Load context (every time you start or take over)
 
 Read, in this order, only what exists:

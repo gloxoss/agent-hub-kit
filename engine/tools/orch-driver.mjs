@@ -38,7 +38,7 @@ const PLAYBOOK = path.join(KIT, 'engine', 'ORCHESTRATOR.md');
 const REPO = path.basename(ROOT);
 const NODE = (process.env.DEVBOX_NODE || os.hostname()).toLowerCase();
 const CFG = JSON.parse(fs.readFileSync(path.join(HUB, 'config.json'), 'utf8')).orchestrator ?? {};
-const DEFAULT_ORDER = ['claude', 'codex', 'claude-or', 'claude-ag2@claude-sonnet-4-6', 'claude-ag2@gemini-3.8-flash-high', 'claude-oc1'];
+const DEFAULT_ORDER = ['claude', 'claude-ag2@gemini-3-flash', 'claude-ag2@gemini-3.8-flash-tiered', 'claude-kie', 'codex-kie', 'claude-ag2@claude-sonnet-4-6', 'codex'];
 const BASE_ORDER = (orderArg?.split(',') ?? CFG.order ?? DEFAULT_ORDER).map((s) => s.trim()).filter(Boolean);
 const CONTROL = path.join(HUB, 'orch-control.json');   // /orch overrides: { order?, paused? }
 const control = () => { try { return JSON.parse(fs.readFileSync(CONTROL, 'utf8')); } catch { return {}; } };
@@ -151,7 +151,15 @@ async function orchCommand(text) {
 function turn(agent, prompt) {
   return new Promise((resolve) => {
     const [cmd, args] = command(agent, prompt, st.sessions[agent]);
-    const child = spawn(cmd, args, { cwd: ROOT, env: { ...process.env, AGENT_PROJECT: REPO, PATH: [path.join(os.homedir(), '.claude-launchers'), path.join(os.homedir(), '.local', 'bin'), process.env.PATH].join(path.delimiter) }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, shell: process.platform === 'win32' });  // no stdin: CLIs wait on an open pipe
+    const orchSubagentEnv = {
+      CLAUDE_CODE_SUBAGENT_MODEL: process.env.ORCH_SUBAGENT_MODEL || CFG.subagentModel || 'claude-3-5-haiku-20241022',
+      CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1',
+      CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS: String(CFG.maxConcurrentSubagents ?? 2),
+      CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION: String(CFG.maxSubagentsPerSession ?? 5),
+      CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: '1',
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: 'claude-3-5-haiku-20241022'
+    };
+    const child = spawn(cmd, args, { cwd: ROOT, env: { ...process.env, ...orchSubagentEnv, AGENT_PROJECT: REPO, PATH: [path.join(os.homedir(), '.claude-launchers'), path.join(os.homedir(), '.local', 'bin'), process.env.PATH].join(path.delimiter) }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, shell: process.platform === 'win32' });  // no stdin: CLIs wait on an open pipe
     let out = '';
     let quietSince = Date.now();
     const take = (d) => { out += d; quietSince = Date.now(); fs.appendFileSync(LOG, d); };
@@ -221,7 +229,11 @@ async function handle(events) {
   queue.unshift(...events);   // nobody could take it: keep it for the retry
 }
 
-const push = (line) => { lastEvent = Date.now(); queue.push(line); };
+const push = (line) => {
+  if (queue.length && queue[queue.length - 1] === line) return;
+  lastEvent = Date.now();
+  queue.push(line);
+};
 
 setInterval(() => {
   if (busy || control().paused) return;
@@ -249,7 +261,11 @@ if (sayOnce) {
   process.exit(0);
 }
 log(`driver up for ${REPO} on ${NODE}; order: ${order().join(' → ')}`);
-if (withAutoloop) follow('autoloop', process.execPath, [path.join(HUB, 'autoloop.mjs')]);
+if (withAutoloop) follow('autoloop', process.execPath, [path.join(HUB, 'autoloop.mjs')], (l) => {
+  if (/^DIGEST\b.*\|\s*running:\s*none$/i.test(l)) return false;
+  if (/^SYNC\b.*pulled 0/i.test(l)) return false;
+  return true;
+});
 // "/orch ..." messages steer the driver itself; every other user message goes to the agent on duty.
 if (fs.existsSync(WA)) follow('whatsapp', process.execPath, [WA, 'inbox'], (l) => {
   if (!l.startsWith('WHATSAPP')) return false;
