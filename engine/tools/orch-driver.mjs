@@ -256,6 +256,10 @@ async function pingAgent(agent, timeoutMs = 3500) {
 }
 
 const downFor = (r, isQuota) => {
+  // 429 rate-limits (RPM / per-minute token spikes) should cool down for 2 minutes, not 2 hours!
+  if (/\b429\b|too many requests|rate.?limit/i.test(r.out) && !/all \d+ accounts 0%|quota exhausted/i.test(r.out)) {
+    return 2 * 60_000;
+  }
   if (!isQuota) return SHORT_DOWN_MS; // 3 min only for transient responding glitches
   const t = r.out?.match(/resets? (\d{1,2}(?::\d\d)?\s*(?:am|pm)?)/i)?.[1];
   if (t) {
@@ -748,7 +752,17 @@ async function handle(events) {
     const sid = sessionFrom(agent, r.out);
     
     if (!hasExplicitError) {
-      if (sid && !hasUserMessage) st.sessions[agent] = sid;
+      if (sid && !hasUserMessage) {
+        st.sessions[agent] = sid;
+        st.turnCount = st.turnCount || {};
+        st.turnCount[agent] = (st.turnCount[agent] || 0) + 1;
+        // Auto-rotate session after 8 turns to prevent cumulative 150k+ token re-reads and quota burn
+        if (st.turnCount[agent] >= 8) {
+          log(`[driver] Auto-rotating session for ${agent} after 8 turns to prevent token bloat.`);
+          delete st.sessions[agent];
+          st.turnCount[agent] = 0;
+        }
+      }
       st.current = agent;
       save();
       log(`turn ok (${agent})`);
