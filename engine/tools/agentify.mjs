@@ -64,10 +64,14 @@ node([path.join(ENGINE, 'tools', 'board-upgrade.mjs'), path.join(ROOT, HUB), ENG
 step(3, 'board + multi-machine sync enabled');
 
 // 4. brain
-spawnSync('git', ['fetch', '-q', 'origin'], { cwd: ROOT, windowsHide: true });
-const hasBrain = spawnSync('git', ['rev-parse', '--verify', '-q', 'origin/brain'], { cwd: ROOT, windowsHide: true }).status === 0;
-const brain = node([path.join(ROOT, HUB, 'sync.mjs'), hasBrain ? 'brain-link' : 'brain-init']).split('\n').pop();
-step(4, `${hasBrain ? 'joined' : 'started'} the shared brain: ${brain}`);
+try {
+  spawnSync('git', ['fetch', '-q', 'origin'], { cwd: ROOT, windowsHide: true });
+  const hasBrain = spawnSync('git', ['rev-parse', '--verify', '-q', 'origin/brain'], { cwd: ROOT, windowsHide: true }).status === 0;
+  const brain = node([path.join(ROOT, HUB, 'sync.mjs'), hasBrain ? 'brain-link' : 'brain-init']).split('\n').pop();
+  step(4, `${hasBrain ? 'joined' : 'started'} the shared brain: ${brain}`);
+} catch (e) {
+  step(4, `shared brain initialization deferred (${e.message.split('\n')[0]})`);
+}
 
 // 5. WhatsApp
 const wa = path.join(os.homedir(), '.config', 'waha', 'wa.mjs');

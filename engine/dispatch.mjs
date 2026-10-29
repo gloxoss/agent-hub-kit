@@ -343,6 +343,12 @@ if (mode === '_runner') {
   const [executor, laneArg, ...taskIds] = argv;
   if (!executor || !laneArg || !taskIds.length) throw new Error('usage: run <executor> <laneId|auto> <taskId> [taskId ...]');
   if (!enabled(executor)) throw new Error(`executor "${executor}" is not available (missing from executors.json or its launcher is missing)`);
+
+  // Enforce Rule 0: Claude is strictly for ORCHESTRATION, never for execution/building tasks
+  if (['claude', 'claude-cpa', 'claude-sonnet', 'claude-opus'].includes(executor)) {
+    console.log(`[POLICY REJECTED] ${executor} is reserved exclusively for ORCHESTRATION, never for execution. Task ${taskIds.join(', ')} not dispatched.`);
+    process.exit(1);
+  }
   if (laneArg !== 'auto' && taskIds.length > 1) throw new Error('a fixed lane takes one task; use auto for several');
   // Shared board: when several machines work on this repo, a task runs only on the machine that
   // claimed it on GitHub first (board.mjs claim exits 3 when another machine owns it).
@@ -406,6 +412,10 @@ if (mode === '_runner') {
   // Reviewers never edit: codex runs in its read-only sandbox, Claude-family CLIs lose their edit tools.
   const [taskId, executor = reviewOrder[0] ?? 'codex'] = argv;
   if (!taskId) throw new Error('usage: review <taskId> [executor]');
+  if (['claude', 'claude-cpa', 'claude-sonnet', 'claude-opus'].includes(executor)) {
+    console.log(`[POLICY REJECTED] ${executor} is reserved exclusively for ORCHESTRATION, never for execution/review.`);
+    process.exit(1);
+  }
   if (!reviewOrder.includes(executor)) throw new Error(`review runs on: ${reviewOrder.join(', ')}`);
   const alive = alivePids();
   const maxReviews = EXECUTOR_MAP[executor]?.maxReviews ?? 2;

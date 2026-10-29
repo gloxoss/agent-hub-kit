@@ -1,23 +1,21 @@
 {
   "buildOrder": [
-    "claude-ag2-sonnet",
-    "claude-ds2",
-    "claude-ds3",
-    "claude-ds1",
-    "agy",
+    "cursor",
     "opencode",
-    "cursor"
+    "agy",
+    "claude-ag2-gemini",
+    "codex",
+    "claude-ds1"
   ],
   "reviewOrder": [
-    "codex",
     "cursor",
-    "claude-ag2-sonnet",
-    "claude-grok",
-    "claude"
+    "claude-ag2-gemini",
+    "codex",
+    "opencode"
   ],
   "sharedReviewers": [
     "cursor",
-    "claude-ag2-sonnet"
+    "claude-ag2-gemini"
   ],
   "executors": [
     {
@@ -297,8 +295,9 @@
         "--dangerously-skip-permissions"
       ],
       "watch": "claude --resume {sid}",
-      "restore": "Claude plan usage limit: wait for the reset or switch account.",
-      "disabled": false,
+      "restore": "Claude is reserved exclusively for orchestration, never for execution/building tasks.",
+      "disabled": true,
+      "disabledNote": "Rule 0: Claude is strictly the orchestrator and must never be used for task execution or reviews.",
       "maxReviews": 2
     },
     {
