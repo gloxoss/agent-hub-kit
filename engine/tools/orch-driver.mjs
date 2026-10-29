@@ -431,7 +431,8 @@ let currentTurn = null; // { child, agent, startedAt, isUser, abort: (reason) =>
 
 function turn(agent, prompt, isUserTurn = false) {
   return new Promise((resolve) => {
-    const [cmd, args] = command(agent, prompt, st.sessions[agent]);
+    const sid = isUserTurn ? undefined : st.sessions[agent];
+    const [cmd, args] = command(agent, prompt, sid);
     const orchSubagentEnv = {
       CLAUDE_CODE_SUBAGENT_MODEL: process.env.ORCH_SUBAGENT_MODEL || CFG.subagentModel || 'claude-3-5-haiku-20241022',
       CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1',
@@ -563,20 +564,62 @@ const bootstrap = (agent, takeover) => {
 function extractReply(out) {
   if (!out) return '';
   const lines = out.trim().split('\n');
+  let finalResult = '';
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i].trim();
     if (line.startsWith('{') && line.endsWith('}')) {
       try {
         const p = JSON.parse(line);
         if (p.type === 'result' && typeof p.result === 'string' && p.result.trim()) {
-          return p.result.trim();
+          finalResult = p.result.trim();
+          break;
         }
         if (p.result && typeof p.result === 'string' && p.result.trim()) {
-          return p.result.trim();
+          finalResult = p.result.trim();
+          break;
         }
       } catch {}
     }
   }
+
+  // If finalResult is a generic status report, intercept it and find the actual drafted conversational response
+  const isGenericReport = /^\*+\s*Orchestrator Status Report/i.test(finalResult);
+  if (isGenericReport) {
+    // 1. Check if thinking block drafted a direct answer
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (line.startsWith('{') && line.endsWith('}')) {
+        try {
+          const p = JSON.parse(line);
+          const thinking = p.message?.content?.find((c) => c.type === 'thinking')?.thinking || '';
+          const draftMatch = thinking.match(/(?:draft the response|response to the user|answer to the operator)[:\s]*\n*["“]([\s\S]+?)["”]/i);
+          if (draftMatch && draftMatch[1].trim().length > 20) {
+            return draftMatch[1].trim();
+          }
+        } catch {}
+      }
+    }
+    // 2. Check earlier assistant text messages that are not status reports
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (line.startsWith('{') && line.endsWith('}')) {
+        try {
+          const p = JSON.parse(line);
+          if (p.type === 'assistant' && p.message?.content) {
+            const texts = p.message.content
+              .filter((c) => c.type === 'text' && c.text && !/^\*+\s*Orchestrator Status Report/i.test(c.text.trim()))
+              .map((c) => c.text.trim())
+              .filter(Boolean);
+            if (texts.length) return texts.join('\n\n');
+          }
+        } catch {}
+      }
+    }
+  }
+
+  if (finalResult && !isGenericReport) return finalResult;
+  if (finalResult) return finalResult;
+
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i].trim();
     if (line.startsWith('{') && line.endsWith('}')) {
@@ -608,26 +651,23 @@ function buildSteerPrompt(agent, userTexts) {
   const opName = st.operatorName ? `Operator name is "${st.operatorName}".` : 'Operator name has not been provided yet (you know them as the project lead on dev-box).';
 
   return [
-    `${ICONS.alarm} DIRECT OPERATOR CONVERSATION (HIGHEST PRIORITY):`,
     `You are the active orchestrator for "${REPO}" on "${NODE}" (turn agent: ${agent}).`,
-    `The human operator sent this message to you from WhatsApp:`,
+    `A HUMAN OPERATOR SENT THIS MESSAGE TO YOU FROM WHATSAPP:`,
     `"""`,
     userTexts,
     `"""`,
     `Context: ${opName}`,
     '',
-    `CRITICAL DIRECTIVES FOR YOUR RESPONSE:`,
-    `1. TALK DIRECTLY TO THE OPERATOR in natural, friendly, conversational language (first person: "I...", "You...").`,
-    `2. NEVER output an "*Orchestrator Status Report*" template or recite numbered review/dispatch checklists (like "1. Review & Acceptance, 2. Worker Concurrency").`,
-    `3. NEVER speak about the operator in the third person (do NOT say "Addressed WhatsApp operator inquiries").`,
-    `4. If the user asked a conversational or personal question (e.g. "what my name ?", "are you here ?"):`,
-    `   - Answer them directly, naturally, and warmly.`,
-    st.operatorName ? `   - Their name is "${st.operatorName}". Answer them directly with their name.` : `   - You do not know their personal name yet. Tell them that honestly and warmly, and ask what they would like you to call them.`,
-    `5. If the user asked "Are we working on something?" or asked about progress:`,
-    `   - Give a direct 1-2 sentence conversational answer mentioning the actual active tasks in progress right now (read docs/HANDOFF.md if needed).`,
-    `6. If the user gave a directive or code instruction:`,
-    `   - Execute or plan it, and explain concisely what was done.`,
-    `7. YOUR ENTIRE TEXT OUTPUT WILL BE DELIVERED DIRECTLY TO THE OPERATOR ON WHATSAPP.`
+    `CRITICAL INSTRUCTIONS FOR THIS TURN:`,
+    `1. TALK DIRECTLY TO THE HUMAN OPERATOR in natural, friendly, conversational language (first person: "I...", "You...").`,
+    `2. NEVER output an "*Orchestrator Status Report*" template or recite numbered review/dispatch checklists.`,
+    `3. NEVER speak about the operator in the third person (do NOT say "Answered direct operator inquiries").`,
+    `4. DO NOT edit or write to docs/HANDOFF.md in this turn! HANDOFF.md is updated only during background maintenance.`,
+    `5. Answer the user's question directly, accurately, and conversationally in 2-4 sentences.`,
+    st.operatorName ? `   - If asked about their name: their name is "${st.operatorName}".` : `   - If asked about their name: you do not know their personal name yet. Tell them that warmly and ask what they would like you to call them.`,
+    `6. If asked about what agents or tasks are running right now:`,
+    `   - Give an honest, plain-English summary of active tasks and agents.`,
+    `7. YOUR ENTIRE FINAL OUTPUT MUST BE ADDRESSED DIRECTLY TO THE OPERATOR ON WHATSAPP.`
   ].join('\n');
 }
 
@@ -708,7 +748,7 @@ async function handle(events) {
     const sid = sessionFrom(agent, r.out);
     
     if (!hasExplicitError) {
-      if (sid) st.sessions[agent] = sid;
+      if (sid && !hasUserMessage) st.sessions[agent] = sid;
       st.current = agent;
       save();
       log(`turn ok (${agent})`);
