@@ -532,13 +532,114 @@ function turn(agent, prompt, isUserTurn = false) {
   });
 }
 
+
+function extractTurnTokens(text) {
+  if (!text) return null;
+  const lines = text.split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (line.includes('usage') || line.includes('modelUsage')) {
+      try {
+        const obj = JSON.parse(line);
+        if (obj.usage) {
+          return {
+            input: obj.usage.input_tokens || 0,
+            output: obj.usage.output_tokens || 0,
+            cached: obj.usage.cache_read_input_tokens || obj.usage.cached_input_tokens || 0,
+            total: (obj.usage.input_tokens || 0) + (obj.usage.output_tokens || 0)
+          };
+        }
+      } catch {}
+    }
+  }
+  return null;
+}
+
+function buildFleetContext() {
+  let commit = 'HEAD';
+  try {
+    commit = execSync('git log -1 --pretty=format:"%h - %s"', { cwd: ROOT, encoding: 'utf8' }).trim();
+  } catch {}
+  
+  let inProgress = [], ready = [], review = [];
+  try {
+    const hubDir = ['.agent-hub-orch', '.agent-hub', '.hub']
+      .map(d => path.join(ROOT, d))
+      .find(d => fs.existsSync(d)) || path.join(ROOT, '.hub');
+    const board = fs.readFileSync(path.join(hubDir, 'BOARD.md'), 'utf8');
+    const lines = board.split('\n');
+    let section = '';
+    for (const l of lines) {
+      if (l.startsWith('## ')) { section = l.slice(3).trim().toLowerCase(); continue; }
+      if (!l.startsWith('|') || l.includes('Task') || l.includes('---')) continue;
+      const cols = l.split('|').map(s => s.trim()).filter(Boolean);
+      if (cols.length >= 3) {
+        const item = { id: cols[0], title: cols[2] || '', assignee: cols[3] || cols[4] || 'unassigned' };
+        if (section.includes('progress')) inProgress.push(item);
+        else if (section.includes('ready')) ready.push(item);
+        else if (section.includes('review')) review.push(item);
+      }
+    }
+  } catch {}
+
+  let handoffSnippet = '';
+  try {
+    const handoffPath = path.join(ROOT, 'docs', 'HANDOFF.md');
+    if (fs.existsSync(handoffPath)) {
+      const handoff = fs.readFileSync(handoffPath, 'utf8');
+      const m = handoff.match(/## Current state[\s\S]*?(?=\n## Current state|\n## Next|$)/);
+      if (m) handoffSnippet = m[0].split('\n').slice(0, 12).join('\n').trim();
+    }
+  } catch {}
+
+  return {
+    commit,
+    inProgress: inProgress.slice(0, 6),
+    ready: ready.slice(0, 6),
+    review: review.slice(0, 6),
+    handoffSnippet
+  };
+}
+
 // Proactive Orchestrator Prompt with Subagent Concurrency rules
 const bootstrap = (agent, takeover) => {
   const isClaudeOrCodex = agent === 'claude-sonnet' || agent === 'claude' || agent.startsWith('codex');
-  
+  const ctx = buildFleetContext();
+
+  const inProgText = ctx.inProgress.length 
+    ? ctx.inProgress.map(p => `  • \`${p.id}\` (${p.assignee}): ${p.title}`).join('\n')
+    : '  • None currently in-flight';
+
+  const reviewText = ctx.review.length
+    ? ctx.review.map(r => `  • \`${r.id}\`: ${r.title}`).join('\n')
+    : '  • None awaiting review';
+
+  const readyText = ctx.ready.length
+    ? ctx.ready.map(r => `  • \`${r.id}\`: ${r.title}`).join('\n')
+    : '  • Backlog empty';
+
   return [
     `You are the active orchestrator for "${REPO}" on "${NODE}" (turn agent: ${agent}).`,
     `Read and follow ${PLAYBOOK} now.`,
+    ``,
+    `================================================================================`,
+    `📍 WHERE ARE WE & CURRENT FLEET OPERATIONAL CONTEXT (FRESH SESSION BRIEFING):`,
+    `================================================================================`,
+    `• Repository: ${REPO} • Node: ${NODE}`,
+    `• Latest Commit: \`${ctx.commit}\``,
+    ``,
+    `🔨 IN-FLIGHT WORKERS & RUNNING TASKS:`,
+    inProgText,
+    ``,
+    `🔍 REVIEW QUEUE (CHECK FIRST):`,
+    reviewText,
+    ``,
+    `🎯 READY TO DISPATCH (TOP BACKLOG):`,
+    readyText,
+    ``,
+    ctx.handoffSnippet ? `📝 PREVIOUS SESSION RECENT STATE & DECISIONS:\n${ctx.handoffSnippet}\n` : '',
+    `================================================================================`,
+    ``,
     `YOUR CORE MISSION IN THIS TURN:`,
     `0. CRITICAL OWNER INVARIANT (ABSOLUTE RULE):`,
     `   - CLAUDE IS RESERVED EXCLUSIVELY FOR ORCHESTRATION, NEVER FOR TASK EXECUTION.`,
@@ -788,9 +889,20 @@ async function handle(events) {
         st.sessions[agent] = sid;
         st.turnCount = st.turnCount || {};
         st.turnCount[agent] = (st.turnCount[agent] || 0) + 1;
-        // Auto-rotate session after 8 turns to prevent cumulative 150k+ token re-reads and quota burn
-        if (st.turnCount[agent] >= 8) {
-          log(`[driver] Auto-rotating session for ${agent} after 8 turns to prevent token bloat.`);
+        const turnTokens = extractTurnTokens(r.out);
+        const inputTokens = turnTokens?.input || 0;
+        const totalTokens = turnTokens?.total || 0;
+        
+        // Anti-hallucination auto-rotation:
+        // Reset session if token context is heavy (>= 75k input or >= 90k total) or every 4 turns
+        const isTokenHeavy = inputTokens >= 75_000 || totalTokens >= 90_000;
+        const isTurnLimit = st.turnCount[agent] >= 4;
+        
+        if (isTokenHeavy || isTurnLimit) {
+          const reason = isTokenHeavy 
+            ? `heavy tokens (${inputTokens.toLocaleString()} in / ${totalTokens.toLocaleString()} total)`
+            : `turn limit (${st.turnCount[agent]} turns reached)`;
+          log(`[driver] Auto-rotating session for ${agent} due to ${reason} to prevent hallucinations & bloat.`);
           delete st.sessions[agent];
           st.turnCount[agent] = 0;
         }
