@@ -42,7 +42,9 @@ Read, in this order, only what exists:
    to the user with `wa image <png> "caption"` when a visual change is ready.
 5. **Accept:** `node <hub>/accept.mjs <task>` commits it; the sync pushes it so every machine can
    pull. Reject with a precise fix list when evidence is missing.
-6. **Report:** one short WhatsApp line per thing the user must see or decide. No noise.
+6. **Report (ANTI-SPAM INVARIANT):** All routine status reporting is delivered on a clean 15-minute schedule by `orch-report-15m.mjs` with full token telemetry and visual evidence.
+   - **NEVER** call `wa send` for routine ticks, heartbeats, queue checks, or "lanes monitored" messages.
+   - Use `wa send` **ONLY** to reply directly to a user's WhatsApp question, request an explicit human decision, or post verified milestone acceptance with `wa image`.
 
 ## 2b. Autonomous Task Engineering, Context Scoping & Model Routing (QuotaShield)
 

@@ -557,8 +557,10 @@ const bootstrap = (agent, takeover) => {
       `   - You may use AT MOST 3 TO 5 workers of your own engine simultaneously so you do NOT drain your quota.`,
       `   - All remaining tasks MUST be dispatched to alternative active builders (e.g. cursor, opencode, agy, claude-oc1).`
     ].join('\n') : '',
-    `4. KEEP USER INFORMED:`,
-    `   - Post significant milestone updates to WhatsApp using: \`wa send "<concise 2-line update>"\`.`,
+    `4. NO ROUTINE TICK SPAM (CRITICAL ANTI-SPAM RULE):`,
+    `   - NEVER send routine tick, status-quo, or queue monitoring messages to WhatsApp.`,
+    `   - All scheduled 15m briefings are handled automatically by orch-report-15m.mjs.`,
+    `   - Use \`wa send\` ONLY when replying directly to a user question, asking for a blocking decision, or delivering accepted milestone proof (\`wa image\`).`,
     `5. HANDOFF: Update docs/HANDOFF.md before ending your turn.`,
     takeover ? `You take over from ${takeover}. Read docs/HANDOFF.md first, then proceed.` : '',
     `\nHANDLE THE EVENTS BELOW.`
@@ -860,7 +862,7 @@ const push = (line) => {
 
 setInterval(() => {
   if (busy || control().paused) return;
-  if (!queue.length && Date.now() - lastEvent > IDLE_MS) push(`TICK ${new Date().toISOString().slice(11, 16)}: no events for ${IDLE_MS / 60000} min; check the hub and keep lanes busy within quota.`);
+  if (!queue.length && Date.now() - lastEvent > IDLE_MS) push(`TICK ${new Date().toISOString().slice(11, 16)}: no events for ${IDLE_MS / 60000} min; check the hub and keep lanes busy within quota. Do NOT send any tick message to WhatsApp.`);
   flush();
 }, BATCH_MS);
 
@@ -961,7 +963,7 @@ if (fs.existsSync(WA)) follow('whatsapp', process.execPath, [WA, 'inbox'], (l) =
   return false;
 });
 
-push('START: the driver just started. Load context, post one short WhatsApp status line, then continue.');
+push('START: the driver just started. Load context and continue work from the hub. Do NOT send any startup message to WhatsApp.');
 
 const REPORTER = path.join(os.homedir(), '.local', 'bin', 'orch-report-15m.mjs');
 if (fs.existsSync(REPORTER)) {
