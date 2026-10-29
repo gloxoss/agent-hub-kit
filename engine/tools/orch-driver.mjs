@@ -757,38 +757,52 @@ function buildSteerPrompt(agent, userTexts) {
 
   const opName = st.operatorName || 'Ossama (Epioso)';
   const wantsDetails = /\b(?:detail|details|full doc|explain all|breakdown|report|deep dive|comprehensive|koulchi|tafasil)\b/i.test(userTexts);
-  const isActionDirective = /\b(?:build|create|make|add|fix|implement|run|start|dispatch|rework|generate|update|code|write|setup|develop)\b/i.test(userTexts);
+  const wantsScreenshots = /\b(?:screenshot|screenshots|screen|screens|image|images|pic|pics|photo|photos|capture|snap|snap-route|show me|proof|settled|arani|chof|tsawer|taswira)\b/i.test(userTexts);
+  const isActionDirective = /\b(?:build|create|make|add|fix|implement|run|start|dispatch|rework|generate|update|code|write|setup|develop|resume|restart|pause|cancel|retry)\b/i.test(userTexts);
+  const isStatusQuery = /\b(?:status|what is running|what are you doing|state|progress|why|who|model|quota|tokens|fleet|board|tasks|in-flight|backlog|audit|check)\b/i.test(userTexts);
 
   let directiveInstructions = [];
-  if (isActionDirective) {
+  if (wantsScreenshots) {
+    directiveInstructions = [
+      `2. SCREENSHOT / VISUAL PROOF REQUEST DETECTED: The operator explicitly asked for screenshot evidence of page(s) or components.`,
+      `   - DO NOT reply with conversational filler or promise to check them later! Take action right now in this turn.`,
+      `   - Run the snapshot tool for each requested route using Bash:`,
+      `     NODE_PATH=/home/dev/projects/lango-english-center-project-fully/lango-app/node_modules node /home/dev/projects/lango-english-center-project-fully/lango-app/scripts/snap-route.cjs <route> /tmp/<filename>.png`,
+      `   - Immediately send each captured screenshot to the operator on WhatsApp:`,
+      `     node /home/dev/.config/waha/wa.mjs image /tmp/<filename>.png "📸 <Route / Task ID> • <Status>"`,
+      `   - In your final response, confirm to ${opName} which screenshots were captured and delivered, including the route status.`
+    ];
+  } else if (isActionDirective) {
     directiveInstructions = [
       `2. ACTION DIRECTIVE DETECTED: The operator asked you to build, fix, create, or run something.`,
       `   - You are the Autonomous Orchestrator. Take full care of all settings, context scoping, skill bindings, and model selection.`,
-      `   - Create a complete A-to-Z task brief in \`.agent-hub-orch/tasks/<TASK-ID>.md\` following \`.agent-hub-orch/templates/brief.md\`:`,
+      `   - Create a complete A-to-Z task brief in `.agent-hub-orch/tasks/<TASK-ID>.md` following `.agent-hub-orch/templates/brief.md`:`,
       `     * Scope: define exact 1 to 3 files to create or modify. Prevent whole-repo reading to save tokens.`,
-      `     * Skills: select 2 to 4 exact skills from \`.agent-hub-orch/skills/\` (verify with \`node .agent-hub-orch/tools/skills.mjs check <TASK-ID>\`).`,
+      `     * Skills: select 2 to 4 exact skills from `.agent-hub-orch/skills/` (verify with `node .agent-hub-orch/tools/skills.mjs check <TASK-ID>`).`,
       `     * Logic: write clear step-by-step implementation recipe so the worker finishes in 1 turn without guessing.`,
-      `     * Test: define exact verification command (e.g. \`npx vitest run ... && npm run check:branch-scope\`).`,
+      `     * Test: define exact verification command (e.g. `npx vitest run ... && npm run check:branch-scope`).`,
       `   - Select the optimal execution engine (QuotaShield):`,
-      `     * Fast & Free / UI / Routine edits: dispatch to \`claude-ag2-gemini\` (Gemini 3 Flash, 15 rotating accounts) or \`opencode\` or \`cursor\` (composer-2.5).`,
-      `     * Heavy Reasoning / Math / Complex Architecture: dispatch to \`codex\` with \`model_reasoning_effort="low"\`.`,
-      `   - Dispatch the task: \`node .agent-hub-orch/dispatch.mjs run <executor> auto <TASK-ID>\`.`,
+      `     * Fast & Free / UI / Routine edits: dispatch to `claude-ag2-gemini` (Gemini 3 Flash, 15 rotating accounts) or `opencode` or `cursor` (composer-2.5).`,
+      `     * Heavy Reasoning / Math / Complex Architecture: dispatch to `codex` with `model_reasoning_effort="low"`.`,
+      `   - Dispatch the task: `node .agent-hub-orch/dispatch.mjs run <executor> auto <TASK-ID>`.`,
       `   - Update docs/HANDOFF.md.`,
       `   - Reply directly to ${opName} on WhatsApp: announce the task created, the assigned executor, and that you'll update them with live screenshot proof when done.`
     ];
-  } else if (wantsDetails) {
+  } else if (wantsDetails || isStatusQuery) {
     directiveInstructions = [
-      `2. The operator explicitly asked for FULL DETAILS / COMPREHENSIVE EXPLANATION. Provide a complete, structured briefing with clear headers:`,
-      `   - Current Status: high-level progress on the platform.`,
-      `   - Completed & Accepted Work: recent pages and features verified and merged.`,
-      `   - Active Work in Flight: exact tasks and models currently running (e.g. OpenCode on shifts and collection desk).`,
-      `   - Blockers & Next Actions: any hurdles or immediate next priorities.`,
+      `2. OPERATIONAL STATUS / BRIEFING REQUEST DETECTED:`,
+      `   - Use tools (Read .agent-hub-orch/BOARD.md, check processes, inspect tasks) to gather real ground truth.`,
+      `   - Provide a complete, structured briefing with clear headers:`,
+      `     * Current Status: high-level progress on the platform.`,
+      `     * Completed & Accepted Work: recent pages and features verified and merged.`,
+      `     * Active Work in Flight: exact tasks and models currently running.`,
+      `     * Blockers & Next Actions: any hurdles or immediate next priorities.`,
       `   Format it clearly with clean markdown headers and bullet points.`
     ];
   } else {
     directiveInstructions = [
-      `2. Answer ONLY what the operator is asking directly in 1-3 concise, conversational sentences. Do NOT bring up unasked topics, unsolicited questions, or ask what to call them.`,
-      `3. NEVER output an "*Orchestrator Status Report*" template or recite numbered review/dispatch checklists.`
+      `2. Answer ONLY what the operator is asking directly in 1-3 concise, grounded sentences.`,
+      `3. Never give empty filler promises (e.g. "I'll keep them on my radar"). If an action or check was requested, execute it using tools!`
     ];
   }
 
@@ -800,10 +814,10 @@ function buildSteerPrompt(agent, userTexts) {
     `"""`,
     '',
     `CRITICAL INSTRUCTIONS FOR THIS TURN:`,
-    `1. TALK DIRECTLY TO THE OPERATOR (${opName}) in natural, friendly language (first person: "I...", "You...").`,
+    `1. TALK DIRECTLY TO THE OPERATOR (${opName}) in natural, professional language (first person: "I...", "You...").`,
     ...directiveInstructions,
     `4. NEVER speak about the operator in the third person.`,
-    isActionDirective ? `5. Execute necessary planning, brief writing, and dispatch tools now.` : `5. DO NOT execute unnecessary tools or edit files in this purely conversational turn!`,
+    `5. YOU ARE FULLY EMPOWERED TO USE TOOLS (Bash, Read, Glob, Grep) to inspect files, take snapshots, check logs, or dispatch tasks. Ground your responses in real live evidence.`,
     `6. YOUR ENTIRE FINAL OUTPUT MUST BE ADDRESSED DIRECTLY TO THE OPERATOR ON WHATSAPP.`
   ].join('\n');
 }
