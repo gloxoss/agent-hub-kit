@@ -654,20 +654,40 @@ function buildSteerPrompt(agent, userTexts) {
 
   const opName = st.operatorName || 'Ossama (Epioso)';
   const wantsDetails = /\b(?:detail|details|full doc|explain all|breakdown|report|deep dive|comprehensive|koulchi|tafasil)\b/i.test(userTexts);
+  const isActionDirective = /\b(?:build|create|make|add|fix|implement|run|start|dispatch|rework|generate|update|code|write|setup|develop)\b/i.test(userTexts);
 
-  const detailInstructions = wantsDetails
-    ? [
-        `2. The operator explicitly asked for FULL DETAILS / COMPREHENSIVE EXPLANATION. Provide a complete, structured briefing with clear headers:`,
-        `   - Current Status: high-level progress on the platform.`,
-        `   - Completed & Accepted Work: recent pages and features verified and merged.`,
-        `   - Active Work in Flight: exact tasks and models currently running (e.g. OpenCode on shifts and collection desk).`,
-        `   - Blockers & Next Actions: any hurdles or immediate next priorities.`,
-        `   Format it clearly with clean markdown headers and bullet points.`
-      ]
-    : [
-        `2. Answer ONLY what the operator is asking directly in 1-3 concise, conversational sentences. Do NOT bring up unasked topics, unsolicited questions, or ask what to call them.`,
-        `3. NEVER output an "*Orchestrator Status Report*" template or recite numbered review/dispatch checklists.`
-      ];
+  let directiveInstructions = [];
+  if (isActionDirective) {
+    directiveInstructions = [
+      `2. ACTION DIRECTIVE DETECTED: The operator asked you to build, fix, create, or run something.`,
+      `   - You are the Autonomous Orchestrator. Take full care of all settings, context scoping, skill bindings, and model selection.`,
+      `   - Create a complete A-to-Z task brief in \`.agent-hub-orch/tasks/<TASK-ID>.md\` following \`.agent-hub-orch/templates/brief.md\`:`,
+      `     * Scope: define exact 1 to 3 files to create or modify. Prevent whole-repo reading to save tokens.`,
+      `     * Skills: select 2 to 4 exact skills from \`.agent-hub-orch/skills/\` (verify with \`node .agent-hub-orch/tools/skills.mjs check <TASK-ID>\`).`,
+      `     * Logic: write clear step-by-step implementation recipe so the worker finishes in 1 turn without guessing.`,
+      `     * Test: define exact verification command (e.g. \`npx vitest run ... && npm run check:branch-scope\`).`,
+      `   - Select the optimal execution engine (QuotaShield):`,
+      `     * Fast & Free / UI / Routine edits: dispatch to \`claude-ag2-gemini\` (Gemini 3 Flash, 15 rotating accounts) or \`opencode\` or \`cursor\` (composer-2.5).`,
+      `     * Heavy Reasoning / Math / Complex Architecture: dispatch to \`codex\` with \`model_reasoning_effort="low"\`.`,
+      `   - Dispatch the task: \`node .agent-hub-orch/dispatch.mjs run <executor> auto <TASK-ID>\`.`,
+      `   - Update docs/HANDOFF.md.`,
+      `   - Reply directly to ${opName} on WhatsApp: announce the task created, the assigned executor, and that you'll update them with live screenshot proof when done.`
+    ];
+  } else if (wantsDetails) {
+    directiveInstructions = [
+      `2. The operator explicitly asked for FULL DETAILS / COMPREHENSIVE EXPLANATION. Provide a complete, structured briefing with clear headers:`,
+      `   - Current Status: high-level progress on the platform.`,
+      `   - Completed & Accepted Work: recent pages and features verified and merged.`,
+      `   - Active Work in Flight: exact tasks and models currently running (e.g. OpenCode on shifts and collection desk).`,
+      `   - Blockers & Next Actions: any hurdles or immediate next priorities.`,
+      `   Format it clearly with clean markdown headers and bullet points.`
+    ];
+  } else {
+    directiveInstructions = [
+      `2. Answer ONLY what the operator is asking directly in 1-3 concise, conversational sentences. Do NOT bring up unasked topics, unsolicited questions, or ask what to call them.`,
+      `3. NEVER output an "*Orchestrator Status Report*" template or recite numbered review/dispatch checklists.`
+    ];
+  }
 
   return [
     `You are the active orchestrator for "${REPO}" on "${NODE}" (turn agent: ${agent}).`,
@@ -678,9 +698,9 @@ function buildSteerPrompt(agent, userTexts) {
     '',
     `CRITICAL INSTRUCTIONS FOR THIS TURN:`,
     `1. TALK DIRECTLY TO THE OPERATOR (${opName}) in natural, friendly language (first person: "I...", "You...").`,
-    ...detailInstructions,
+    ...directiveInstructions,
     `4. NEVER speak about the operator in the third person.`,
-    `5. DO NOT execute tools or edit docs/HANDOFF.md in this turn!`,
+    isActionDirective ? `5. Execute necessary planning, brief writing, and dispatch tools now.` : `5. DO NOT execute unnecessary tools or edit files in this purely conversational turn!`,
     `6. YOUR ENTIRE FINAL OUTPUT MUST BE ADDRESSED DIRECTLY TO THE OPERATOR ON WHATSAPP.`
   ].join('\n');
 }

@@ -44,6 +44,36 @@ Read, in this order, only what exists:
    pull. Reject with a precise fix list when evidence is missing.
 6. **Report:** one short WhatsApp line per thing the user must see or decide. No noise.
 
+## 2b. Autonomous Task Engineering, Context Scoping & Model Routing (QuotaShield)
+
+You are the Master Governor of all context, skills, model routing, and token quotas. When the operator asks you to build, fix, or run something:
+
+1. **Autonomous Deconstruction (Zero-Ambiguity Brief):**
+   - Create `<hub>/tasks/<TASK>.md` following `templates/brief.md`.
+   - Never write vague briefs: specify exact line references, data contracts, and error states so the execution worker finishes in 1 turn (no guessing, zero rework loops).
+
+2. **Strict Context Scoping (Zero Workspace Bloat):**
+   - In `Scope`, claim strictly the 1 to 3 files being created or modified.
+   - List everything else in `Out of scope`.
+   - Workers are strictly forbidden from reading entire repository trees, `.next`, or audit caches. Passing 200 lines of focused code instead of 50,000 lines saves 95% of tokens.
+
+3. **Explicit Skill Injections:**
+   - Resolve 2 to 4 project skills from `<hub>/skills/` (use `node <hub>/tools/skills.mjs find <terms>`).
+   - Run `node <hub>/tools/skills.mjs check <TASK>` to guarantee every skill resolves before dispatch.
+
+4. **Dynamic Model & Engine Routing (The Speed & Quota Shield):**
+   - **Fast / Free / UI / Routine Edits:** Dispatch to `claude-ag2-gemini` (Gemini 3 Flash, 15 rotating accounts, $0) or `opencode` (DeepSeek v4.1 Flash free) or `cursor` with `--model composer-2.5`.
+   - **Complex Logic / Math / Architecture:** Dispatch to `codex` (with `model_reasoning_effort="low"` or `"medium"`).
+   - **Orchestration & Architecture:** Handled directly by you (the coordinator). Claude is NEVER dispatched to write code.
+
+5. **Deterministic Verification Command:**
+   - Every brief MUST define the exact command in `Done when` (e.g., `npm test ... && npm run check:branch-scope`).
+   - The worker must run this command and prove exit 0 before calling `hub done`.
+
+6. **Automated Evidence & Reporting:**
+   - For UI tasks: run `/home/dev/.local/bin/snap-route <route>` to capture a live Playwright screenshot of the settled page.
+   - Send the screenshot proof to WhatsApp with `wa image <file> "caption"`.
+
 ## 3. Talking to the user
 
 - `wa send "text"` posts to this project's WhatsApp group (tagged with project and machine).
