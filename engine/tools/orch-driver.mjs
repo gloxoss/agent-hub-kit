@@ -652,26 +652,22 @@ function buildSteerPrompt(agent, userTexts) {
     log(`[handle] Learned operator name: "${st.operatorName}"`);
   }
 
-  const opName = st.operatorName ? `Operator name is "${st.operatorName}".` : 'Operator name has not been provided yet (you know them as the project lead on dev-box).';
+  const opName = st.operatorName || 'Ossama (Epioso)';
 
   return [
     `You are the active orchestrator for "${REPO}" on "${NODE}" (turn agent: ${agent}).`,
-    `A HUMAN OPERATOR SENT THIS MESSAGE TO YOU FROM WHATSAPP:`,
+    `A HUMAN OPERATOR (${opName}) SENT THIS MESSAGE TO YOU FROM WHATSAPP:`,
     `"""`,
     userTexts,
     `"""`,
-    `Context: ${opName}`,
     '',
     `CRITICAL INSTRUCTIONS FOR THIS TURN:`,
-    `1. TALK DIRECTLY TO THE HUMAN OPERATOR in natural, friendly, conversational language (first person: "I...", "You...").`,
-    `2. NEVER output an "*Orchestrator Status Report*" template or recite numbered review/dispatch checklists.`,
-    `3. NEVER speak about the operator in the third person (do NOT say "Answered direct operator inquiries").`,
-    `4. DO NOT edit or write to docs/HANDOFF.md in this turn! HANDOFF.md is updated only during background maintenance.`,
-    `5. Answer the user's question directly, accurately, and conversationally in 2-4 sentences.`,
-    st.operatorName ? `   - If asked about their name: their name is "${st.operatorName}".` : `   - If asked about their name: you do not know their personal name yet. Tell them that warmly and ask what they would like you to call them.`,
-    `6. If asked about what agents or tasks are running right now:`,
-    `   - Give an honest, plain-English summary of active tasks and agents.`,
-    `7. YOUR ENTIRE FINAL OUTPUT MUST BE ADDRESSED DIRECTLY TO THE OPERATOR ON WHATSAPP.`
+    `1. TALK DIRECTLY TO THE OPERATOR (${opName}) in natural, friendly, conversational language (first person: "I...", "You...").`,
+    `2. Answer ONLY what the operator is asking directly in 1-3 sentences. Do NOT bring up unasked topics, unsolicited questions, or ask what to call them.`,
+    `3. NEVER output an "*Orchestrator Status Report*" template, markdown tables, or numbered review/dispatch checklists.`,
+    `4. NEVER speak about the operator in the third person.`,
+    `5. DO NOT execute tools or edit docs/HANDOFF.md in this turn!`,
+    `6. YOUR ENTIRE FINAL OUTPUT MUST BE ADDRESSED DIRECTLY TO THE OPERATOR ON WHATSAPP.`
   ].join('\n');
 }
 
