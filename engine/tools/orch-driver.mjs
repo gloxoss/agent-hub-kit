@@ -597,6 +597,40 @@ function extractReply(out) {
   return '';
 }
 
+function buildSteerPrompt(agent, userTexts) {
+  const nameMatch = userTexts.match(/(?:my name is|i am|call me|je m'appelle|smiti)\s+([a-zA-Z\u0600-\u06FF]+)/i);
+  if (nameMatch) {
+    st.operatorName = nameMatch[1];
+    save();
+    log(`[handle] Learned operator name: "${st.operatorName}"`);
+  }
+
+  const opName = st.operatorName ? `Operator name is "${st.operatorName}".` : 'Operator name has not been provided yet (you know them as the project lead on dev-box).';
+
+  return [
+    `${ICONS.alarm} DIRECT OPERATOR CONVERSATION (HIGHEST PRIORITY):`,
+    `You are the active orchestrator for "${REPO}" on "${NODE}" (turn agent: ${agent}).`,
+    `The human operator sent this message to you from WhatsApp:`,
+    `"""`,
+    userTexts,
+    `"""`,
+    `Context: ${opName}`,
+    '',
+    `CRITICAL DIRECTIVES FOR YOUR RESPONSE:`,
+    `1. TALK DIRECTLY TO THE OPERATOR in natural, friendly, conversational language (first person: "I...", "You...").`,
+    `2. NEVER output an "*Orchestrator Status Report*" template or recite numbered review/dispatch checklists (like "1. Review & Acceptance, 2. Worker Concurrency").`,
+    `3. NEVER speak about the operator in the third person (do NOT say "Addressed WhatsApp operator inquiries").`,
+    `4. If the user asked a conversational or personal question (e.g. "what my name ?", "are you here ?"):`,
+    `   - Answer them directly, naturally, and warmly.`,
+    st.operatorName ? `   - Their name is "${st.operatorName}". Answer them directly with their name.` : `   - You do not know their personal name yet. Tell them that honestly and warmly, and ask what they would like you to call them.`,
+    `5. If the user asked "Are we working on something?" or asked about progress:`,
+    `   - Give a direct 1-2 sentence conversational answer mentioning the actual active tasks in progress right now (read docs/HANDOFF.md if needed).`,
+    `6. If the user gave a directive or code instruction:`,
+    `   - Execute or plan it, and explain concisely what was done.`,
+    `7. YOUR ENTIRE TEXT OUTPUT WILL BE DELIVERED DIRECTLY TO THE OPERATOR ON WHATSAPP.`
+  ].join('\n');
+}
+
 let busy = false;
 let queue = [];
 let lastEvent = Date.now();
@@ -606,46 +640,15 @@ async function handle(events) {
   const userEvents = events.filter((e) => e.startsWith('whatsapp:') || e.startsWith('USER ('));
   const hasUserMessage = userEvents.length > 0;
   
-  let steerPrompt = '';
   let userTexts = '';
-  let isGreeting = false;
   if (hasUserMessage) {
     userTexts = userEvents
       .map((e) => e.replace(/^(whatsapp:\s*(WHATSAPP\s*\d\d:\d\d:\s*)?|USER\s*\([^)]*\):\s*)/i, '').trim())
       .filter(Boolean)
       .join('\n');
-    
-    isGreeting = /^(hey|hello|hi|salam|salut|yo|bonjour|good morning|how are you|test|status|what's up|whats up|howdy)\b/i.test(userTexts.trim()) && userTexts.length < 50;
-
-    if (isGreeting) {
-      steerPrompt = [
-        `${ICONS.alarm} USER CONVERSATIONAL MESSAGE:`,
-        `The human operator sent a direct greeting/check-in from WhatsApp: "${userTexts}"`,
-        '',
-        'IMMEDIATE ACTION FOR THIS TURN:',
-        '1. Respond DIRECTLY, warmly, and concisely in 1-2 sentences.',
-        '   (Example: "Hey! dev-box orchestrator is online and tracking active build lanes. How can I help you today?")',
-        '2. DO NOT perform heavy code reviews, vitest tests, or deep reasoning in this turn.',
-        '3. Your output will be delivered directly to the user on WhatsApp.'
-      ].join('\n');
-    } else {
-      steerPrompt = [
-        `${ICONS.alarm} USER STEERING INSTRUCTION (HIGHEST PRIORITY):`,
-        'The human operator sent this directive directly from WhatsApp:',
-        '"""',
-        userTexts,
-        '"""',
-        'RULES FOR THIS TURN:',
-        '1. Prioritize addressing the user directive above BEFORE running any routine background maintenance.',
-        '2. If the user asked a question, give a direct, clear answer.',
-        '3. If attachments or screenshots are listed, inspect them in .wa-inbox/ to understand the visual context.',
-        '4. Provide a clear, concise summary of your answer/actions as your final response to be delivered to WhatsApp.',
-        '5. Update docs/HANDOFF.md if plans or tasks were changed.'
-      ].join('\n');
-    }
   }
 
-  const body = steerPrompt ? (isGreeting ? steerPrompt : `${steerPrompt}\n\nBACKGROUND EVENTS:\n${events.join('\n')}`) : `EVENTS:\n${events.join('\n')}`;
+  const body = `EVENTS:\n${events.join('\n')}`;
   let takeover = null;
   const failed = [];
   
@@ -667,7 +670,9 @@ async function handle(events) {
     }
 
     const fresh = !st.sessions[agent];
-    const prompt = fresh || takeover ? `${bootstrap(agent, takeover)}\n\n${body}` : `${body}\n\nHandle these per the playbook; update docs/HANDOFF.md before you finish.`;
+    const prompt = hasUserMessage
+      ? buildSteerPrompt(agent, userTexts)
+      : (fresh || takeover ? `${bootstrap(agent, takeover)}\n\n${body}` : `${body}\n\nHandle these per the playbook; update docs/HANDOFF.md before you finish.`);
     log(`turn → ${agent}${fresh ? ' (new session)' : ''}: ${events.length} event(s)`);
     
     let r = await turn(agent, prompt, hasUserMessage);
@@ -716,6 +721,11 @@ async function handle(events) {
         } else {
           log('turn completed with user message but extractReply was empty; sending fallback completion');
           notify(`${ICONS.check} *Received:* "_${userTexts.slice(0, 40)}_" \u{2022} *Turn Completed*\nOrchestrator finished executing your directive.`);
+        }
+        const nonUserEvents = events.filter((e) => !e.startsWith('whatsapp:') && !e.startsWith('USER ('));
+        if (nonUserEvents.length) {
+          queue.push(...nonUserEvents);
+          setImmediate(flush);
         }
       }
       st.pausedNote = null; save();
