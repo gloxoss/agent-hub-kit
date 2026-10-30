@@ -1,4 +1,5 @@
 # Fleet hardening plan (orchestrator driver, hub, WhatsApp, SchoolOS infra)
+n> **Superseded by `.ultraplan/` (UltraPlan, 2026-10-30): 14 sections, 63 tasks. Start at `.ultraplan/SUMMARY.md`.**
 
 Owner: orchestrator (plans, reviews, accepts). Executor: one coding agent, task by task.
 Date: 2026-10-30. Repos: `agent-hub-kit` (this repo, the engine), `gloxoss/devbox` (server kit,
