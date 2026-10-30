@@ -20,7 +20,9 @@ Parallel batches: 5 (Batch 0 = interim switch)
   commit + push in the kit → on the server `git -C ~/.local/share/agent-hub-kit pull --ff-only && node ~/.local/share/agent-hub-kit/install.mjs`
   → `node --check` the installed file on the server. **Never restart an orchestrator with a file that fails `node --check`.**
 - **Rollout:** straight to live with a quick rollback: before replacing a live file, keep `<file>.prev`; rollback = copy back + restart.
-- **Report after every task** (format in PLAN.md §Reporting) and stop; the orchestrator says "next".
+- **Audit and continue automatically:** after each worker finishes, check its non-empty absolute scope against the plan and exact changed-file list, inspect the diff, run the task verification in the owning repo, and accept or rework. Record the result in PLAN.md, then dispatch the next dependency-ready task without waiting for an operator message. Keep independent safe lanes busy and obey shared-file order.
+- **Acceptance is not a Git merge:** call work merged only after the accepted task files are committed in the owning repository; report the commit SHA.
+- **Pause only** for a task explicitly marked type=checkpoint, a genuine safety/scope blocker, or the consolidated final report after Section 13. Do not pause after routine audits or task completions.
 - Tasks marked `type="checkpoint"` need the owner: stop and send the stated message.
 
 ## Batch Execution Order
