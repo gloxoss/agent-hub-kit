@@ -15,20 +15,24 @@ when memory or disk is low, and the disk is enlarged.
 - Test: `kill -9` of the driver → it is running again within 15 s and resumes its queue.
 - Test: with `buildMinFreeMB` above free RAM, dispatch prints "not dispatched: low memory" and starts nothing.
 - Test: logrotate dry run rotates `runs/*.log` older than a day and keeps 7.
+- Test: a schedule-worker idle-connection error is logged without taking down Next; the 3401 systemd unit restarts after a killed dev server.
 
 ## Tasks
 
 <task type="auto" id="05-01">
   <name>Orchestrator as a restartable service</name>
-  <files>devbox: bin/devbox (orch start/stop/enable), services/orch/orch@.service (new)</files>
+  <files>devbox: bin/devbox (orch start/stop/enable), services/orch/orch@.service (new), services/orch/schoolos-3401.service (new); SchoolOS: lango-app/src/addons/advanced-reporting/services/schedule-worker.ts</files>
   <action>
     Replace the tmux-only start with a systemd user unit template `orch@<project>.service`: `ExecStart` runs the driver
     directly (no tmux), output appended to `<hub>/runs/orchestrator.log`,
     `Restart=always`, `RestartSec=5`, `StartLimitIntervalSec=300`, `StartLimitBurst=5`, `MemoryHigh=800M`, `MemoryMax=1G`.
     `devbox orch start|stop|enable|disable|status <p>` call `systemctl --user`. `devbox orch attach <p>` opens the dashboard
-    (section 11) or `tail -f` of the log until then. Keep `devbox orch chat` (interactive Claude in tmux) unchanged.
+    (section 11) or `tail -f` of the log until then. Keep `devbox orch chat` (interactive Claude in tmux) unchanged. For the
+    SchoolOS pilot, also supervise the port-3401 Next dev server with a persistent systemd unit, not a naked background shell.
+    Catch idle PostgreSQL disconnects around schedule-worker reads, log the failure and continue serving; one transient
+    schedule query must not terminate Next.
   </action>
-  <verify>`devbox orch enable lango…` then `kill -9 $(pgrep -f orch-driver)` → `systemctl --user is-active orch@lango…` active again within 15 s.</verify>
+  <verify>`devbox orch enable lango…` then `kill -9 $(pgrep -f orch-driver)` → `systemctl --user is-active orch@lango…` active again within 15 s; `schoolos-3401` restarts and serves `/fr/login`; injected idle-DB failure is logged and the process stays active.</verify>
   <done>Crashes and reboots bring the orchestrator back by itself.</done>
 </task>
 

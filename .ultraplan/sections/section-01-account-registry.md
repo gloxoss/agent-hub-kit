@@ -58,7 +58,8 @@ dashboard (section 11) read only these.
   <action>
     Add `pick({ role, exclude=[], hubDir })`: enabled entries with that role, quota from `quota.mjs --json` cached 2 min in
     `<hub>/runs/quota-cache.json`, sorted by remaining desc; entries with remaining < 0.05 or a future resetAt go last;
-    `owner: "user"` Claude always last and only if every other is down; `cost: "paid"` only when enabled. Return the ordered
+    `owner: "user"` Claude always last and only if every other is down; prefer the healthy free Gemini manager, then Codex, as
+    the tie-break order. `cost: "paid"` only when enabled. Return the ordered
     list with the reason per entry (`"remaining 0.62"`, `"down until 14:10"`). CLI: `node engine/accounts.mjs pick --role orchestrator --json`.
   </action>
   <verify>With a fake quota cache file (fixture), `pick --role orchestrator` returns the expected order (fixture test printed by the command).</verify>
@@ -85,7 +86,9 @@ dashboard (section 11) read only these.
     Add `devbox lanes list|add|enable|disable <id>`. `add` asks family (codex-proxy / opencode / cursor / api-key / claude-profile),
     writes a disabled entry to `~/.config/agent-hub/accounts.json`, prints the single login step for that family
     (CLIProxyAPI login URL, `cursor-agent login`, `devbox secrets edit` for an API key, `claude setup-token` for a Claude profile),
-    then `enable` runs a one-prompt ping and turns it on only if it answers. `list` prints id, roles, cost, enabled, remaining.
+    then `enable` runs a one-prompt ping and turns it on only if it answers. Treat provider errors such as `Free usage limit
+    reached` as quota exhaustion: do not retry the same model in a loop; cool it down and fall back to the next enabled entry.
+    `list` prints id, roles, cost, enabled, remaining.
     Add `.config/agent-hub/accounts.json` to the vault capture list (`AGENT_EXTRA`).
   </action>
   <verify>`devbox lanes add` (family api-key, fake id) then `devbox lanes list` shows it disabled; `devbox lanes enable` on a dead key refuses.</verify>
@@ -98,7 +101,9 @@ dashboard (section 11) read only these.
   <action>
     Replace "try the fallback list until one fails" with `accounts.pick({role: "builder"|"reviewer", exclude})`: the autoloop asks
     for the ranked list before each build/review dispatch and takes the first entry that also has a free lane and is not the
-    task's builder (for reviews). Keep the existing cooldown on real failures. Executors without a registry entry keep today's
+    task's builder (for reviews). Resolve lanes from configured `lanes` first, then the actual project tsconfig location; if
+    neither yields IDs, use the documented `builder-1` through `builder-6` fallback. Never silently return an empty lane set.
+    Keep the existing cooldown on real failures. Executors without a registry entry keep today's
     fallback order (backward compatible).
   </action>
   <verify>Fixture quota cache where the first fallback lane is at 2% → the autoloop dry run dispatches to the lane with the most remaining.</verify>

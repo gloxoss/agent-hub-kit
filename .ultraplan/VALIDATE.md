@@ -65,3 +65,20 @@
 | 1 | Missing requirement | Builders/reviewers not chosen by remaining quota (A16) | Added 01-06 to section 01 | 2026-10-30 |
 | 2 | Missing requirement | PC manager had no auto-restart (A17) | Added 05-06 (Windows Task Scheduler supervisor) | 2026-10-30 |
 | 3 | Scope creep | 04-04 weekly history compaction | Kept (user approved) | 2026-10-30 |
+
+## Follow-up Audit Finding Traceability
+
+| Finding | Planned resolution | Task |
+|---|---|---|
+| Informal operator questions lacked live fleet state; Markdown/HANDOFF parsers did not match real files | Digest every operator message from event/job records and documented headings, with populated fixtures | 06-07 |
+| Reporter expected nonexistent job fields and repeated idle updates | Reconstruct active jobs from launch records and liveness; suppress unchanged idle pulses | 06-07 |
+| Invalid accept/dispatch command examples | Verify exact legacy bridge command syntax against shipped entry points | 06-07 |
+| Wrong model health probe and cold proxy false lockout | Remove billable pings; quota-only check, correct Gemini model, cold proxy is not down | 06-03, 06-06 |
+| Cumulative token counts treated as per-turn usage | Store cumulative readings and compute session deltas | 06-05 |
+| WhatsApp reply dedupe, including idle report repetition | Replies bypass dedupe; auto reports only on state change | 02-01, 06-07 |
+| OpenCode DeepSeek free allowance exhausted on both test machines | Classify as quota exhaustion, stop retries, cool down, and fall back to the next enabled account | 01-05, 06-06 |
+| SchoolOS lane discovery returned no lanes | Resolve configured and nested tsconfig lanes, then use documented fallback | 01-06 |
+| Deferred review failures were cached as handled | Retry until a real dispatch job exists | 03-04 |
+| Port 3401 died on transient PostgreSQL disconnect | Catch/log schedule query failures and run Next under systemd | 05-01 |
+| Outgoing commits were not safely synchronized | Build/check, inspect exact outgoing commits, push verified branch and record SHA | 12-04 |
+| Screenshot locale/redirect/memory failures | Add `/en`, authorization redirect and Chromium resource smoke cases | 13-02 |

@@ -59,7 +59,9 @@ drains, and keep the features the owner wants (reports, screenshots, session ref
     `--disallowedTools Edit,Write,MultiEdit,NotebookEdit,Task,Agent`; resume with `--resume <sid>` else `--session-id <uuid>`.
     Codex → `codex exec --json --sandbox workspace-write -c sandbox_workspace_write.network_access=true [-m model] -C ROOT`,
     resume `codex exec resume <sid>` (no `--sandbox` on resume; use `-c sandbox_mode="workspace-write"`). OpenCode →
-    `opencode run --format json [--agent plan] [-m model] [-s sid]`. stdin ignored; PATH includes `~/.claude-launchers` and
+    `opencode run --format json [--agent plan] [-m model] [-s sid]`. Do not spend a model turn as a liveness ping. Quota probes
+    are read-only; a cold local proxy is unknown/available until the configured launcher starts it, not a provider failure.
+    The Gemini manager default is `gemini-3-flash`; never probe it with a Claude model ID. stdin ignored; PATH includes `~/.claude-launchers` and
     `~/.local/bin`; silence watchdog and turn timeout from config; kill the process tree (POSIX `kill -TERM -pgid`, Windows `taskkill /T`).
     Cheap entries (cost "free", e.g. Gemini pool) may edit: no edit-tool denial. Every entry (cheap or costly) also gets read
     denials for secrets: `Read(./.env*)`, `Read(~/.config/devbox/**)`, `Read(~/.cli-proxy-api/**)`, `Read(~/.config/waha/.env)`,
@@ -104,6 +106,8 @@ drains, and keep the features the owner wants (reports, screenshots, session ref
   <action>
     Each wake: `accounts.pick({role: "orchestrator"})` (section 01), skip entries over `maxTurnsPerHour` or down. On failure set
     `until` from the provider reset time if known, else 60 min + random 0–15 min jitter; try the next entry silently (log only).
+    Default tie-break order is the free Gemini pool, then Codex, then the owner's Claude as last resort; a transient provider
+    rate limit never sends a WhatsApp switch warning.
     WhatsApp alert (`--auto`, `format.alert`) only when: every entry is down (one alert per distinct down-set, with
     `explainDrain()` lines and "add or top up an account: devbox lanes add"), or the manager on duty changed for over 1 h. Whenever the owner's own Claude account (owner "user") takes a turn, send one
     line first: "Using your Claude account: <other managers> down until HH:MM." (once per episode).
@@ -118,8 +122,13 @@ drains, and keep the features the owner wants (reports, screenshots, session ref
   <action>
     `prompt.mjs`: bootstrap = playbook path (`engine/ORCHESTRATOR.md`) + a 15-line fleet digest (running jobs, review queue, last 3
     accepts with commit hash, dev health from config) + events; steer prompt = owner text + digest + "answer with task IDs and
-    numbers, no filler"; no regex intent detection. `report.mjs`: every `reportEveryMinutes` send `format.status` only if the board
-    changed; hourly heartbeat when idle; in quiet hours no routine messages except one "nothing running, reply to start work". Unanswered numbered questions are
+    numbers, no filler"; no regex intent detection. Every operator message, including informal status questions, gets this live
+    digest. Build it from the actual hub event schema and dispatch jobs.jsonl fields (`t`, `taskId`, `id`, `pid`, `log`), not
+    Markdown board tables; parse only documented `HANDOFF.md` headings. Fixture tests must include populated in-flight/review
+    tasks and a real handoff shape. `report.mjs` reconstructs active jobs from launch records plus process/log liveness (jobs have
+    no status field); report only when board/job/commit state changes and suppress identical idle pulses for 4 h. Verify CLI
+    examples against shipped entry points: legacy bridge acceptance uses `node .agent-hub-orch/accept.mjs <id> "<note>"`;
+    dispatch syntax is `dispatch.mjs run <executor> auto <id>`, never `run auto <id>`. Unanswered numbered questions are
     re-sent every hour, day and night (quiet hours do not apply to them), while other tasks keep running.
     Screenshots: if `screenshotCommand` is set, `/orch shot <route>` runs it and sends `wa image`. `commands.mjs`: keep
     `/orch status|quotas|use|order|pause|resume|reset|models` (quotas from `quota.mjs --json`, not `check-quotas.mjs`).

@@ -31,10 +31,14 @@ project and machine uses the same setup.
 
 <task type="auto" id="13-02">
   <name>Baseline, then 12-hour run</name>
-  <files>docs/reports/fleet-proof-<date>.md (new)</files>
+  <files>docs/reports/fleet-proof-<date>.md (new); SchoolOS: scripts/snap-route.cjs</files>
   <action>
     Record the baseline from 13-01. Run the new fleet on SchoolOS for 12 hours with normal work. Produce the report with
-    before/after per PRD §8 criterion (PASS/FAIL each) and send it with `wa report`.
+    before/after per PRD §8 criterion (PASS/FAIL each) and send it with `wa report`. Include screenshot smoke cases for `/en`
+    routes, unauthorized login/access-denied redirects, and memory-safe Chromium flags. Update `snap-route.cjs` to preserve
+    `/en` (prefix only routes lacking `/fr`, `/ar`, or `/en`), launch Chromium with `--no-sandbox`,
+    `--disable-setuid-sandbox`, `--disable-dev-shm-usage`, and `--disable-gpu`, and fail if the final URL is `/login` or
+    `/access-denied`. Install browser dependencies before calling a capture failure an application failure.
   </action>
   <verify>Report exists, every PRD §8 criterion has a number and PASS/FAIL.</verify>
   <done>The owner has proof the fleet works, or a precise list of what doesn't.</done>

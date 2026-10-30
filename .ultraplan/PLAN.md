@@ -94,3 +94,11 @@ fails `node --check`.
 
 ### Sections Modified
 00 (new), 01, 02, 03 (+03-05), 05 (+05-05), 06, 07, 09, 11, index, PLAN totals (14 sections, 61 tasks).
+
+### Follow-up audit findings folded into existing tasks
+- S06-03/06-05/06-07: no paid model pings; correct Gemini probe/default; cumulative token deltas; real event/job schemas and handoff headings; valid bridge CLI examples; live digest on every operator message; active-job and duplicate-idle reporting.
+- S01-05/01-06/S03-04: explicit free-quota exhaustion triggers cooldown and fallback; configured/project-relative lane resolution has a non-empty fallback; deferred reviews remain retryable until a dispatch is actually recorded.
+- S02-01: duplicate suppression stays on automatic messages, never owner replies.
+- S05-01/S12-04: persist port 3401 and isolate transient PostgreSQL idle failures; verify outgoing branch contents and checks before sync.
+- S13-02: exercise locale, unauthorized redirect, and memory-safe browser capture cases.
+- Task count is unchanged; each finding is attached to an existing task and gate.

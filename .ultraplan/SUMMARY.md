@@ -17,6 +17,7 @@ messages) or a live terminal dashboard, and is told clearly why when allowances 
 - Worktree per task with a merge-fixer task on clashes; one database change at a time
 - PC + servers: area claims, a lead with a failover lease, cross-machine reviews
 - Auto-restart on Linux (systemd) and Windows (Task Scheduler), 7-day logs, RAM/disk gates, live dashboard
+- Audit hardening: truthful fleet digests/reporter, retryable deferred reviews, lane fallback, resilient port 3401, and guarded branch sync
 
 ## Tech Stack
 - Node ESM (built-ins only) for the engine; bash for devbox

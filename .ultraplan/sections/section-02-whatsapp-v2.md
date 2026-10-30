@@ -26,7 +26,7 @@ messages to every orchestrator on the project, and full reports as files.
   <action>
     Add `--auto` and `--reply-to <messageId>` to `send|image|file`. Replies (`--reply-to` or no `--auto`) bypass every
     filter and cache and use WAHA `reply_to`. Only `--auto` messages go through the anti-spam regex and the duplicate cache.
-    Remove the current 10-minute cache from the reply path. Keep backward compatibility: plain `send` = reply path. If WAHA is unreachable or returns 5xx, spool the message to
+    Dedupe only automatic sends; identical owner replies and command answers must each deliver. Remove the current 10-minute cache from the reply path. Keep backward compatibility: plain `send` = reply path. If WAHA is unreachable or returns 5xx, spool the message to
     `~/.config/waha/outbox/` and retry with backoff (1, 2, 5, 10 min) from `wa flush` / the next send; replies keep their order.
   </action>
   <verify>Send the same text twice without `--auto`: both appear in the group (check `/api/{session}/chats/{id}/messages`); twice with `--auto`: one.</verify>

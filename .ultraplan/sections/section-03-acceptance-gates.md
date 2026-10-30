@@ -61,7 +61,9 @@ helper reviewed it. Claims in a report never count by themselves.
   <files>engine/autoloop.mjs (accept call ~162 and rework branch only)</files>
   <action>
     When `accept.mjs` prints `GATE FAIL`, treat it like a review FAIL: rework on a different builder; after 2 gate
-    failures print `DECIDE <id>: gate failed twice (<cmd>)` so the orchestrator wakes. Add a selftest step: a task whose
+    failures print `DECIDE <id>: gate failed twice (<cmd>)` so the orchestrator wakes. A deferred review (RAM floor, reviewer
+    concurrency, or unmet dependency) is not a failure and stays retryable: record a handled key only after dispatch records a
+    real job; retry on the next eligible tick instead of suppressing attempts for 10 minutes. Add a selftest step: a task whose
     brief check is `node -e "process.exit(1)"` ends in REWORK.
   </action>
   <verify>`node engine/selftest.mjs` passes including the new gate step.</verify>
