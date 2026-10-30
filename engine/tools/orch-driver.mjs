@@ -776,15 +776,15 @@ function buildSteerPrompt(agent, userTexts) {
     directiveInstructions = [
       `2. ACTION DIRECTIVE DETECTED: The operator asked you to build, fix, create, or run something.`,
       `   - You are the Autonomous Orchestrator. Take full care of all settings, context scoping, skill bindings, and model selection.`,
-      `   - Create a complete A-to-Z task brief in `.agent-hub-orch/tasks/<TASK-ID>.md` following `.agent-hub-orch/templates/brief.md`:`,
+      `   - Create a complete A-to-Z task brief in '.agent-hub-orch/tasks/<TASK-ID>.md' following '.agent-hub-orch/templates/brief.md':`,
       `     * Scope: define exact 1 to 3 files to create or modify. Prevent whole-repo reading to save tokens.`,
-      `     * Skills: select 2 to 4 exact skills from `.agent-hub-orch/skills/` (verify with `node .agent-hub-orch/tools/skills.mjs check <TASK-ID>`).`,
+      `     * Skills: select 2 to 4 exact skills from '.agent-hub-orch/skills/' (verify with 'node .agent-hub-orch/tools/skills.mjs check <TASK-ID>').`,
       `     * Logic: write clear step-by-step implementation recipe so the worker finishes in 1 turn without guessing.`,
-      `     * Test: define exact verification command (e.g. `npx vitest run ... && npm run check:branch-scope`).`,
+      `     * Test: define exact verification command (e.g. 'npx vitest run ... && npm run check:branch-scope').`,
       `   - Select the optimal execution engine (QuotaShield):`,
-      `     * Fast & Free / UI / Routine edits: dispatch to `claude-ag2-gemini` (Gemini 3 Flash, 15 rotating accounts) or `opencode` or `cursor` (composer-2.5).`,
-      `     * Heavy Reasoning / Math / Complex Architecture: dispatch to `codex` with `model_reasoning_effort="low"`.`,
-      `   - Dispatch the task: `node .agent-hub-orch/dispatch.mjs run <executor> auto <TASK-ID>`.`,
+      `     * Fast & Free / UI / Routine edits: dispatch to 'claude-ag2-gemini' (Gemini 3 Flash, 15 rotating accounts) or 'opencode' or 'cursor' (composer-2.5).`,
+      `     * Heavy Reasoning / Math / Complex Architecture: dispatch to 'codex' with 'model_reasoning_effort="low"'.`,
+      `   - Dispatch the task: 'node .agent-hub-orch/dispatch.mjs run <executor> auto <TASK-ID>'.`,
       `   - Update docs/HANDOFF.md.`,
       `   - Reply directly to ${opName} on WhatsApp: announce the task created, the assigned executor, and that you'll update them with live screenshot proof when done.`
     ];
@@ -962,8 +962,11 @@ async function handle(events) {
   if (failed.length) {
     const next = Math.min(...order().map((e) => st.until[e] ?? Infinity));
     const note = `${ICONS.pause} No agent available right now, I retry at ${new Date(next).toTimeString().slice(0, 5)}.\n${failed.join('\n')}`;
-    if (st.pausedNote?.text !== note.split('\n')[0] || Date.now() - st.pausedNote.at > 3 * 3600_000) {
-      notify(note); st.pausedNote = { text: note.split('\n')[0], at: Date.now() }; save();
+    // Dedupe on WHICH agents are down, not on the retry time (that changes every round, so the
+    // old key never matched and the same pause note went out every ~15 minutes).
+    const key = order().filter((e) => !healthy(e)).sort().join('|');
+    if (st.pausedNote?.key !== key || Date.now() - st.pausedNote.at > 3 * 3600_000) {
+      notify(note); st.pausedNote = { key, at: Date.now() }; save();
     }
   }
   busy = false;
