@@ -9,11 +9,12 @@ Parallel batches: 5 (Batch 0 = interim switch)
 - **Executors are non-Claude lanes** (Codex, Gemini via Antigravity, OpenCode, Cursor). Never Claude.
 - **Read only the files a task lists**, with the line ranges given. `orch-driver.mjs` is 1,104 lines:
   never read it whole. Use RESEARCH.md for context instead of re-exploring.
-- **Repos and paths**
-  - Kit (engine): `C:\Users\OMEN\OneDrive\Documents\projects\agent-hub-kit` → `engine/…` (pushed to `gloxoss/agent-hub-kit`).
-  - Devbox (server kit, WhatsApp): on the server `~/devbox` (`gloxoss/devbox`): `services/whatsapp/wa.mjs`, `bin/devbox`, `modules/*.sh`.
-  - Pilot project: on the server `~/projects/lango-english-center-project-fully`, hub `.agent-hub-orch/` (becomes `.hub/` in section 12).
-  - SSH aliases from the PC: `ssh vps-dev` (agents user), `ssh vps` (admin, sudo).
+- **Repos and paths** (always use absolute paths in task briefs and commands)
+  - Kit: /home/dev/.local/share/agent-hub-kit on the VPS (pushed to gloxoss/agent-hub-kit); use <kit-root>/engine/….
+  - Devbox: /home/dev/devbox (gloxoss/devbox); use <devbox-root>/services/whatsapp/wa.mjs, bin/devbox, and modules/*.sh.
+  - SchoolOS pilot: /home/dev/projects/lango-english-center-project-fully; hub .agent-hub-orch/ (becomes .hub/ in section 12).
+  - From the PC, ssh vps-dev reaches the agents user; ssh vps reaches the admin account.
+  - **Never interpret a path relative to whichever hub happens to be active.** Put the owning repo root in every brief and run each command from that root.
 - **Zero new dependencies.** Node ESM, built-ins only; bash for devbox.
 - **Ship flow for kit changes:** `node --check <file>` → `cd /tmp && node <kit>/engine/selftest.mjs` (all steps pass) →
   commit + push in the kit → on the server `git -C ~/.local/share/agent-hub-kit pull --ff-only && node ~/.local/share/agent-hub-kit/install.mjs`
