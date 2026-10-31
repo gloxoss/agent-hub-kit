@@ -76,3 +76,18 @@ Any failure: create a follow-up task, do not mark the section done.
 ## Constraints (unchanged)
 Non-Claude executors only. Zero new dependencies. Read only the files a task lists, with line ranges. Never restart a live process with a file that
 fails `node --check`. No secrets in output or commits.
+
+## Status update 2026-10-31 (orchestrator, after wiring)
+Done and live on dev-box: driver v2 (191 lines) installed and running as `orch@lango-english-center-project-fully`, picking the free Gemini pool first
+(registry rewritten with per-model quota, roles and `command`), one autoloop + one WhatsApp inbox, `KillMode=process` so a driver restart leaves workers alone,
+selftest 11/11 on Windows and Linux. Kit `9bddb68`+, devbox `fffe21f`.
+
+Findings that change the remaining work:
+1. **SchoolOS has two live hubs.** The product backlog lives in `.agent-hub-orch` (142 accepted, 55 open, 10 claimed/assigned); `.hub` holds only the plan tasks.
+   The section 12 "merge" never happened. The driver is pinned to the live hub with `<project>/.hub-dir` (`.agent-hub-orch`). Remaining: write `tools/hub-merge.mjs`
+   (idempotent: append events not already present, copy briefs and rewrite `.agent-hub-orch/` paths in them, refuse while any job is RUNNING), run it in a quiet window,
+   upgrade that hub's engine files from the kit, delete `.hub-dir`, archive the old hub.
+2. **The server is thrashing:** load 22-26 on 2 cores, swap 4/4 GB, ten workers (six silent for 3 h, one 9.7 h, about 400 MB each) plus a 2 GB Next server.
+   The driver needed 2.5 minutes to start. Needs the owner: stop the stale workers (list in the report) and/or grow the VM (4 cores, 24 GB are free on Oracle).
+3. Stray WhatsApp inbox processes (three at once) were consuming owner messages; the two orphans were stopped. Dispatch has no memory gate in the old hub engine (the new engine has one).
+4. Not wired yet by design: `lead.mjs` (multi-machine lease), dashboard attach, worktrees/gates (they live in the kit engine, not in the old hub's copy).
