@@ -7,6 +7,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { runResponder } from '../orchestrator/responder.mjs';
 
 // 1. Auto-load vault environment variables
 const VAULT_ENV = path.join(os.homedir(), '.config', 'devbox', 'vault', 'env');
@@ -1043,28 +1044,46 @@ if (fs.existsSync(WA)) follow('whatsapp', process.execPath, [WA, 'inbox'], (l) =
     : rawMsg.trim().replace(/\s+/g, ' ').slice(0, 80);
   const currentDuty = (order().find(healthy) ?? 'Gemini').replace('@', ' \u{2022} ');
 
+  if (currentTurn && !currentTurn.isUser) {
+    const runningAgent = currentTurn.agent.replace('@', ' \u{2022} ');
+    const runningElapsed = Math.round((Date.now() - currentTurn.startedAt) / 1000);
+    log(`[responder] Manager is busy (${currentTurn.agent}, ${runningElapsed}s elapsed). Never interrupting mid-turn. Routing message to side responder.`);
+
+    st.responderSession = st.responderSession || {};
+    runResponder(rawMsg, { root: ROOT, hubDir: HUB, session: st.responderSession })
+      .then(async (res) => {
+        const reply = extractReply(res.stdout || res.out || res.stdoutBuffer || '');
+        if (reply) {
+          log(`[responder] replying to user via WhatsApp (${reply.length} chars)`);
+          notify(reply);
+        } else {
+          log(`[responder] completed but reply was empty`);
+        }
+      })
+      .catch((err) => {
+        log(`[responder] error: ${err.message}`);
+      });
+
+    const ack = [
+      `*${ICONS.eye} Message Received (Responder Active)*`,
+      `${ICONS.bullet} *Instruction:* "_${snippet}${snippet.length >= 80 ? '...' : ''}_"`,
+      `${ICONS.bullet} *Coordinator:* ${currentDuty}`,
+      `${ICONS.bullet} *Status:* Manager is busy on a background turn; side responder is answering your question without interrupting the manager.`
+    ].join('\n');
+
+    log(`Responder ACK sent to WhatsApp: "${snippet.slice(0, 30)}..."`);
+    notify(ack);
+
+    lastEvent = Date.now();
+    return false;
+  }
+
   let preemptionOccurred = false;
   let runningAgent = '';
   let runningElapsed = 0;
 
-  if (currentTurn && !currentTurn.isUser) {
-    preemptionOccurred = true;
-    runningAgent = currentTurn.agent.replace('@', ' \u{2022} ');
-    runningElapsed = Math.round((Date.now() - currentTurn.startedAt) / 1000);
-    log(`[PREEMPT] Incoming user instruction. Aborting background turn (${currentTurn.agent}, ${runningElapsed}s elapsed) to yield priority!`);
-    currentTurn.abort('user priority steering instruction received');
-  }
-
   let ack = '';
-  if (preemptionOccurred) {
-    ack = [
-      `*${ICONS.alarm} Priority Steering Engaged*`,
-      `${ICONS.bullet} *Instruction:* "_${snippet}${snippet.length >= 80 ? '...' : ''}_"`,
-      `${ICONS.bullet} *Coordinator:* ${currentDuty}`,
-      `${ICONS.bullet} *Action:* Preempted background task (${runningAgent}, ${runningElapsed}s elapsed).`,
-      `${ICONS.bullet} *Status:* Orchestrator addressing your directive right now...`
-    ].join('\n');
-  } else if (currentTurn && currentTurn.isUser) {
+  if (currentTurn && currentTurn.isUser) {
     ack = [
       `*${ICONS.eye} Message Received*`,
       `${ICONS.bullet} *Instruction:* "_${snippet}${snippet.length >= 80 ? '...' : ''}_"`,

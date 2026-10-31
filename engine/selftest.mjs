@@ -112,6 +112,51 @@ try {
       expect(out, /usage:/i, `${f} --help output`);
     }
   });
+
+  step('migration lock refusal and release', () => {
+    const isMigOut = node(path.join(tmp, '.agent-hub', 'dispatch.mjs'), ['is-migration'], tmp);
+    expect(isMigOut, /F1.*isMigration: true/, 'F1 phase migration');
+    expect(isMigOut, /F2.*isMigration: true/, 'F2 drizzle/ scope');
+    expect(isMigOut, /F3.*isMigration: false/, 'F3 normal scope');
+
+    const runsDir = path.join(tmp, '.agent-hub', 'runs');
+    fs.mkdirSync(runsDir, { recursive: true });
+    const logPath = path.join(runsDir, 'fake-migration.log');
+    fs.writeFileSync(logPath, 'running\n');
+
+    const jobsFile = path.join(runsDir, 'jobs.jsonl');
+    const fakeJob = {
+      id: 'fake-job-1',
+      t: new Date().toISOString(),
+      mode: 'run',
+      executor: 'opencode',
+      agentId: 'builder-1',
+      taskId: 'M-test',
+      pid: process.pid,
+      log: 'runs/fake-migration.log'
+    };
+    fs.writeFileSync(jobsFile, JSON.stringify(fakeJob) + '\n');
+
+    const lockFile = path.join(runsDir, 'migration.lock');
+    fs.writeFileSync(lockFile, JSON.stringify({ task: 'M-test', pid: process.pid, t: new Date().toISOString() }));
+
+    hubCmd('orchestrator', 'add', 'K-normal', '--phase', 'build', '--title', 'normal task', '--scope', 'src/demo.ts');
+
+    const r1 = spawnSync(process.execPath, [path.join(tmp, '.agent-hub', 'dispatch.mjs'), 'run', 'opencode', 'builder-1', 'K-normal'], { cwd: tmp, encoding: 'utf8' });
+    const out1 = `${r1.stdout ?? ''}${r1.stderr ?? ''}`;
+    if (!out1.includes('not dispatched: migration lock (M-test)')) {
+      throw new Error(`expected migration lock refusal, got: ${out1}`);
+    }
+
+    fs.writeFileSync(logPath, 'running\n[dispatch] exit 0\n');
+    try { fs.unlinkSync(lockFile); } catch {}
+
+    const r2 = spawnSync(process.execPath, [path.join(tmp, '.agent-hub', 'dispatch.mjs'), 'run', 'opencode', 'builder-1', 'K-normal'], { cwd: tmp, encoding: 'utf8' });
+    const out2 = `${r2.stdout ?? ''}${r2.stderr ?? ''}`;
+    if (out2.includes('not dispatched: migration lock')) {
+      throw new Error(`expected migration lock release, but got refusal: ${out2}`);
+    }
+  });
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
 }

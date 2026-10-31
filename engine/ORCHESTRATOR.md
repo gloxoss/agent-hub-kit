@@ -59,7 +59,7 @@ You are the Master Governor of all context, skills, model routing, and token quo
    - List everything else in `Out of scope`.
    - Workers are strictly forbidden from reading entire repository trees, `.next`, or audit caches. Passing 200 lines of focused code instead of 50,000 lines saves 95% of tokens.
 
-3. **Explicit Skill Injections:**
+3. **Explicit Skill Injections & Verification:**
    - Resolve 2 to 4 project skills from `<hub>/skills/` (use `node <hub>/tools/skills.mjs find <terms>`).
    - Run `node <hub>/tools/skills.mjs check <TASK>` to guarantee every skill resolves before dispatch.
 
@@ -68,9 +68,9 @@ You are the Master Governor of all context, skills, model routing, and token quo
    - **Complex Logic / Math / Architecture:** Dispatch to `codex` (with `model_reasoning_effort="low"` or `"medium"`).
    - **Orchestration & Architecture:** Handled directly by you (the coordinator). Claude is NEVER dispatched to write code.
 
-5. **Deterministic Verification Command:**
-   - Every brief MUST define the exact command in `Done when` (e.g., `npm test ... && npm run check:branch-scope`).
-   - The worker must run this command and prove exit 0 before calling `hub done`.
+5. **Deterministic Verification Command & RAM Safety:**
+   - Every brief MUST define the exact command in `Done when` (e.g., unit tests via shared heavy lock `node <hub>/tools/heavy.mjs npx vitest run ...` and type checks).
+   - The worker must run this command through shared locks and prove exit 0 with real output before calling `hub done`. Never run full test suites or production builds (`npm run build`) on the host.
 
 6. **Automated Evidence & Reporting:**
    - For UI tasks: run `/home/dev/.local/bin/snap-route <route>` to capture a live Playwright screenshot of the settled page.
