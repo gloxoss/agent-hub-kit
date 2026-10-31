@@ -21,6 +21,7 @@ import { bootstrapPrompt, continuePrompt, responderPrompt, digest } from '../orc
 import { runCommand, readControl } from '../orchestrator/commands.mjs';
 import { createReporter } from '../orchestrator/report.mjs';
 import { shouldRotate, appendLedgerRecord } from '../orchestrator/telemetry.mjs';
+import { burnStats, burnLimits, burnVerdict } from '../orchestrator/burn.mjs';
 
 const argv = process.argv.slice(2);
 if (argv.includes('--help')) {
@@ -66,7 +67,8 @@ const sendReply = (text) => (toTerminal ? console.log(text) : wa(['send', text])
 const sendAuto = (text) => (toTerminal ? console.log(text) : wa(['send', '--auto', text]));
 const sendImage = (file, caption) => wa(['image', file, caption]);
 
-const ctx = { cfg, st, save, sendImage };
+let intake = null;
+const ctx = { cfg, st, save, sendImage, resumeDispatch: () => intake?.resumeAutoloop() };
 const control = () => readControl(cfg);
 let busy = false;
 const queue = [];        // system events waiting for the manager
@@ -170,10 +172,12 @@ async function main() {
   fs.writeFileSync(lock, String(process.pid));
   const unlock = () => { try { if (fs.readFileSync(lock, 'utf8') === String(process.pid)) fs.unlinkSync(lock); } catch { /* already gone */ } };
   process.on('exit', unlock);
+  process.on('exit', () => intake?.stop());   // the driver's own helpers die with it; running workers are not touched
   for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => process.exit(0));
 
   log(`driver up for ${cfg.projectName} on ${cfg.nodeName}`);
-  const intake = new EventIntake(cfg, { autoloop: !noAutoloop, whatsapp: !noWa }).start();
+  intake = new EventIntake(cfg, { autoloop: !noAutoloop, whatsapp: !noWa }).start({ holdAutoloop: Boolean(st.burn?.tripped) });
+  if (st.burn?.tripped) log(`dispatching stays held from before the restart: ${st.burn.why}`);
   intake.on('wake', (ev) => {
     if (ev.wakeClass === 'user') return onOwner(ownerText(ev.line));
     if (ev.wakeClass === 'quota') {   // autoloop already moves work on a lane quota hit; wake only on a burst
@@ -184,6 +188,26 @@ async function main() {
     if (['decide', 'sync', 'start'].includes(ev.wakeClass)) queue.push(ev.line);
   });
   setInterval(() => tick().catch((e) => log(`tick error: ${e.message}`)), 20_000);
+  // Quota-burn breaker: many jobs and nothing accepted means allowance is draining without progress. Hold dispatch, tell the owner why.
+  setInterval(() => {
+    try {
+      if (st.burn?.tripped || noAutoloop) return;
+      const lim = burnLimits(cfg);
+      const verdict = burnVerdict(burnStats(cfg.hubPath, lim.windowMinutes), lim);
+      if (!verdict) return;
+      if (verdict.kind === 'no-progress') {
+        intake?.pauseAutoloop();
+        st.burn = { tripped: true, at: new Date().toISOString(), why: verdict.why };
+        save();
+        log(`burn breaker tripped: ${verdict.why}`);
+        sendAuto(`Dispatching is paused to protect your quota.\n${verdict.why}\nRunning workers finish; nothing new starts. Check why nothing is being accepted, then send /orch resume.`);
+      } else if (st.burn?.loopKey !== verdict.why) {
+        st.burn = { ...(st.burn ?? {}), loopKey: verdict.why };
+        save();
+        sendAuto(`Warning: ${verdict.why} The autoloop stops it after its rework limit; reply if you want it held now.`);
+      }
+    } catch (e) { log(`burn check error: ${e.message}`); }
+  }, 5 * 60_000);
   setInterval(() => { try { reporter.tick(); } catch (e) { log(`report error: ${e.message}`); } }, 120_000);
   if (turnsInLastHour(st) === 0) queue.push('START: the driver just started. Load context and report where things stand.');
 }

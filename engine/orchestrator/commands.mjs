@@ -5,8 +5,9 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { loadAccounts, pick } from '../accounts.mjs';
 import { isDown, turnsInLastHour, candidates } from './select.mjs';
+import { burnStats, burnLimits, burnVerdict, burnLine } from './burn.mjs';
 
-const HELP = 'Commands: /orch status | quotas | use <id> | order <id,id,...|default> | pause | resume | reset | models | shot <route>';
+const HELP = 'Commands: /orch status | quotas | burn | use <id> | order <id,id,...|default> | pause | resume | reset | models | shot <route>';
 const hhmm = (t) => new Date(t).toTimeString().slice(0, 5);
 
 export function controlFile(cfg) { return path.join(cfg.hubPath, 'orch-control.json'); }
@@ -48,9 +49,16 @@ export async function runCommand(text, ctx) {
       return [
         `Orchestrator ${cfg.projectName} on ${cfg.nodeName}${control.paused ? ' (PAUSED)' : ''}`,
         `On duty: ${ranked[0]?.id ?? 'none available'}${st.current && st.current !== ranked[0]?.id ? ` (last turn: ${st.current})` : ''}`,
+        st.burn?.tripped ? `Dispatching is HELD: ${st.burn.why} Send /orch resume to continue.` : 'Dispatching: on',
         `Manager turns in the last hour: ${turnsInLastHour(st)} (limit ${cfg.orchestrator.maxTurnsPerHour} for automatic wakes; your messages always get answered)`,
         'Order:', ...lines, HELP,
       ].join('\n');
+    }
+    case 'burn': {
+      const lim = burnLimits(cfg);
+      const s = burnStats(cfg.hubPath, lim.windowMinutes);
+      const v = burnVerdict(s, lim);
+      return [burnLine(s), v ? `Warning: ${v.why}` : 'Spend and progress look healthy.', `Breaker trips at ${lim.maxJobsNoAccept} jobs with no accepted task, or ${lim.maxBuildsPerTask} builds of one task, within ${lim.windowMinutes} min.`].join('\n');
     }
     case 'quotas': {
       const rows = pick({ hubDir: cfg.hubPath }).map((e, i) => `${i + 1}. ${e.id} | ${e.command}${e.model ? ' ' + e.model : ''} | ${e.reason}`);
@@ -73,7 +81,12 @@ export async function runCommand(text, ctx) {
       return `Order pinned: ${ids.join(' > ')} (others follow by allowance).`;
     }
     case 'pause': writeControl(cfg, { paused: true }); return 'Paused. Events are kept and handled after /orch resume. Your messages are still answered.';
-    case 'resume': writeControl(cfg, { paused: false }); return `Resumed. On duty: ${ranked[0]?.id ?? 'none available'}.`;
+    case 'resume': {
+      writeControl(cfg, { paused: false });
+      const wasHeld = st.burn?.tripped;
+      if (wasHeld) { st.burn = { tripped: false, clearedAt: new Date().toISOString() }; save(); ctx.resumeDispatch?.(); }
+      return `Resumed${wasHeld ? ' and dispatching is back on' : ''}. On duty: ${ranked[0]?.id ?? 'none available'}.`;
+    }
     case 'reset': st.down = {}; st.downWhy = {}; for (const s of Object.values(st.sessions ?? {})) delete s.downUntil; save(); return 'All managers marked ready again.';
     case 'models': {
       const rows = accounts.map((e, i) => `${i + 1}. ${e.id} | ${e.command}${e.model ? ' ' + e.model : ''} | ${(e.roles ?? []).join('/')} | ${e.enabled ? 'enabled' : 'off'}`);

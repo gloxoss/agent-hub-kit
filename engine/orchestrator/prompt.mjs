@@ -5,6 +5,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { isCheap } from '../accounts.mjs';
+import { burnStats, burnLine } from './burn.mjs';
 
 const KIT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 export const PLAYBOOK = path.join(KIT, 'engine', 'ORCHESTRATOR.md');
@@ -28,6 +29,7 @@ export function digest(cfg) {
     const accepts = ev.filter((e) => e.type === 'accept').slice(-3).map((e) => `${e.id} (${String(e.t).slice(11, 16)})`);
     lines.push(`Last accepts: ${accepts.join(', ') || 'none'}`);
   } catch { /* no events yet */ }
+  try { lines.push(burnLine(burnStats(hub, 180))); } catch { /* no jobs yet */ }
   const commit = run('git', ['log', '-1', '--format=%h %s'], cfg.root);
   if (commit) lines.push(`Last commit: ${commit.slice(0, 100)}`);
   return lines.join('\n');

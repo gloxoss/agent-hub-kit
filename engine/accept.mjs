@@ -136,33 +136,31 @@ const wtBase = (CFG.worktrees?.base || '../{repo}-wt').replace('{repo}', path.ba
 const wtPath = path.resolve(ROOT, wtBase, id);
 const workDir = (worktreesEnabled && fs.existsSync(wtPath)) ? wtPath : ROOT;
 
-const checks = checksFor(id, HUB);
+// config "acceptGate": "enforce" (default) rejects on a failing check; "warn" records the failure but still accepts
+// (use while the machine cannot run the project's checks, so broken tooling never causes endless rework);
+// "off" skips the checks.
+const gateMode = CFG.acceptGate || 'enforce';
+const checks = gateMode === 'off' ? [] : checksFor(id, HUB);
 const timeoutSec = CFG.acceptCheckTimeoutSec || 600;
+const gateProblem = (output, rejectNote) => {
+  const runsDir = path.join(HUB, 'runs');
+  fs.mkdirSync(runsDir, { recursive: true });
+  fs.writeFileSync(path.join(runsDir, `${id}.gate.log`), output);
+  if (gateMode === 'warn') { console.log(`GATE WARN ${id}: ${rejectNote} (accepted anyway; log in runs/${id}.gate.log)`); return; }
+  console.log(`GATE FAIL ${id}`);
+  try { hub('reject', id, '--note', rejectNote); } catch {}
+  process.exit(1);
+};
 for (const cmd of checks) {
   try {
     execSync(cmd, { cwd: workDir, timeout: timeoutSec * 1000, encoding: 'utf8', stdio: 'pipe' });
   } catch (err) {
-    const output = `${err.stdout || ''}\n${err.stderr || ''}\n${err.message || ''}`;
-    const runsDir = path.join(HUB, 'runs');
-    fs.mkdirSync(runsDir, { recursive: true });
-    fs.writeFileSync(path.join(runsDir, `${id}.gate.log`), output);
-    console.log(`GATE FAIL ${id}`);
-    try {
-      hub('reject', id, '--note', `gate: ${cmd} exit ${err.status ?? 1}`);
-    } catch {}
-    process.exit(1);
+    gateProblem(`${err.stdout || ''}\n${err.stderr || ''}\n${err.message || ''}`, `gate: ${cmd} exit ${err.status ?? 1}`);
   }
 }
 const codePhases = new Set(['build', 'assemble', 'scaffold', 'tokens']);
-if (codePhases.has(t.phase) && checks.length === 0) {
-  const runsDir = path.join(HUB, 'runs');
-  fs.mkdirSync(runsDir, { recursive: true });
-  fs.writeFileSync(path.join(runsDir, `${id}.gate.log`), 'no runnable check in brief');
-  console.log(`GATE FAIL ${id}`);
-  try {
-    hub('reject', id, '--note', 'no runnable check in brief');
-  } catch {}
-  process.exit(1);
+if (gateMode !== 'off' && codePhases.has(t.phase) && checks.length === 0) {
+  gateProblem('no runnable check in brief', 'no runnable check in brief');
 }
 
 // Worktree merge and cleanup (S-07-05)

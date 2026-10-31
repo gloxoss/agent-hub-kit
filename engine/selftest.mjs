@@ -119,7 +119,7 @@ try {
       import path from 'node:path';
       const dir = process.argv[1];
       let ok = true;
-      for (const m of ['reply', 'select', 'prompt', 'commands', 'report', 'events', 'telemetry', '../accounts']) {
+      for (const m of ['reply', 'select', 'prompt', 'commands', 'report', 'events', 'telemetry', 'burn', '../accounts']) {
         const mod = await import(pathToFileURL(path.join(dir, 'orchestrator', m + '.mjs')).href);
         const fn = mod.runSelfTest ?? mod.runFixtureTest;
         if (!fn) { console.error('NO TEST ' + m); ok = false; continue; }

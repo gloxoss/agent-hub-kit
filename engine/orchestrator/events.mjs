@@ -34,8 +34,9 @@ export class EventIntake extends EventEmitter {
     this.stopped = false;
   }
 
-  start() {
+  start({ holdAutoloop = false } = {}) {
     this.stopped = false;
+    this.autoloopHeld = holdAutoloop;   // the quota-burn breaker keeps dispatching off across restarts
     if (this.useAutoloop) this.spawnAutoloop();
     if (this.useWhatsapp) this.spawnInbox();
     return this;
@@ -43,8 +44,24 @@ export class EventIntake extends EventEmitter {
 
   spawnAutoloop() {
     const file = path.join(this.cfg.hubPath, 'autoloop.mjs');
-    if (this.stopped || !fs.existsSync(file)) return;
-    this.watch(spawn(process.execPath, [file], { cwd: this.cfg.root, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }), 'autoloop', () => this.spawnAutoloop());
+    if (this.stopped || this.autoloopHeld || this.autoloopChild || !fs.existsSync(file)) return;
+    const child = spawn(process.execPath, [file], { cwd: this.cfg.root, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    this.autoloopChild = child;
+    child.on('exit', () => { if (this.autoloopChild === child) this.autoloopChild = null; });
+    this.watch(child, 'autoloop', () => this.spawnAutoloop());
+  }
+
+  // Stop dispatching (the autoloop is what starts workers); running workers are not touched.
+  pauseAutoloop() {
+    this.autoloopHeld = true;
+    const c = this.autoloopChild;
+    this.autoloopChild = null;
+    if (c) { try { c.kill(); } catch { /* already gone */ } }
+  }
+
+  resumeAutoloop() {
+    this.autoloopHeld = false;
+    if (this.useAutoloop) this.spawnAutoloop();
   }
 
   spawnInbox() {
