@@ -3,6 +3,20 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
+const DEFAULT_HUBS = ['.hub', '.agent-hub-orch', '.agent-hub'];
+
+// Which hub folder is live: env AGENT_HUB_DIR, else the first line of <project>/.hub-dir, else the default order.
+// A project that still has two hubs (while their data is being merged) names the live one explicitly.
+export function hubCandidates(dir) {
+  const pinned = [];
+  if (process.env.AGENT_HUB_DIR) pinned.push(process.env.AGENT_HUB_DIR);
+  try {
+    const line = fs.readFileSync(path.join(dir, '.hub-dir'), 'utf8').split(/\r?\n/)[0].trim();
+    if (line) pinned.push(line);
+  } catch { /* no pin file */ }
+  return [...pinned, ...DEFAULT_HUBS.filter((d) => !pinned.includes(d))];
+}
+
 export function resolveConfig(startDir = process.cwd()) {
   let root = path.resolve(startDir);
   let current = root;
@@ -10,7 +24,7 @@ export function resolveConfig(startDir = process.cwd()) {
   let hubPath = null;
 
   while (true) {
-    for (const candidate of ['.hub', '.agent-hub-orch', '.agent-hub']) {
+    for (const candidate of hubCandidates(current)) {
       const p = path.join(current, candidate);
       if (fs.existsSync(p) && fs.statSync(p).isDirectory()) {
         hubDir = candidate;
@@ -26,7 +40,7 @@ export function resolveConfig(startDir = process.cwd()) {
   }
 
   if (!hubPath) {
-    for (const candidate of ['.hub', '.agent-hub-orch', '.agent-hub']) {
+    for (const candidate of hubCandidates(root)) {
       const p = path.join(root, candidate);
       if (fs.existsSync(p)) {
         hubDir = candidate;
