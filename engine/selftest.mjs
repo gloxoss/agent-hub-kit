@@ -113,6 +113,42 @@ try {
     }
   });
 
+  step('orchestrator modules pass their own checks', () => {
+    const code = `
+      import { pathToFileURL } from 'node:url';
+      import path from 'node:path';
+      const dir = process.argv[1];
+      let ok = true;
+      for (const m of ['reply', 'select', 'prompt', 'commands', 'report', 'events', 'telemetry']) {
+        const mod = await import(pathToFileURL(path.join(dir, 'orchestrator', m + '.mjs')).href);
+        const fn = mod.runSelfTest ?? mod.runFixtureTest;
+        if (!fn) { console.error('NO TEST ' + m); ok = false; continue; }
+        const quiet = console.log; console.log = () => {};
+        let r; try { r = await fn(); } catch (e) { r = false; }
+        console.log = quiet;
+        if (r === false) { console.error('FAILED ' + m); ok = false; }
+      }
+      process.exit(ok ? 0 : 1);
+    `;
+    const r = spawnSync(process.execPath, ['--input-type=module', '-e', code, HERE], { encoding: 'utf8' });
+    if (r.status !== 0) throw new Error(`module self-tests failed: ${(r.stdout + r.stderr).trim().split('\n').slice(-3).join(' | ')}`);
+  });
+
+  step('driver v2 dry cycle picks a manager and builds its command', () => {
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'driver-dry-'));
+    try {
+      fs.mkdirSync(path.join(work, '.hub', 'runs'), { recursive: true });
+      fs.writeFileSync(path.join(work, '.hub', 'config.json'), JSON.stringify({ name: 'dry-demo' }));
+      fs.copyFileSync(path.join(HERE, 'accounts.example.json'), path.join(work, '.hub', 'accounts.json'));
+      const r = spawnSync(process.execPath, [path.join(HERE, 'tools', 'orch-driver.mjs'), work, '--say', 'status?', '--no-wa'], { encoding: 'utf8', env: { ...process.env, ORCH_DRY: '1' } });
+      const out = `${r.stdout}${r.stderr}`;
+      if (!/\[ORCH_DRY\] runTurn command: /.test(out)) throw new Error(`no dry command printed: ${out.slice(0, 200)}`);
+      if (!/claude-ag2[\s\S]*--model gemini-3-flash/.test(out) && !/codex exec|claude[\s\S]*--model sonnet|claude-ag2[\s\S]*--model claude-sonnet/.test(out)) throw new Error(`unexpected manager: ${out.slice(0, 200)}`);
+      const cmd = spawnSync(process.execPath, [path.join(HERE, 'tools', 'orch-driver.mjs'), work, '--cmd', 'status', '--no-wa'], { encoding: 'utf8', env: { ...process.env, ORCH_DRY: '1' } });
+      if (!/On duty:/.test(cmd.stdout)) throw new Error(`/orch status failed: ${cmd.stdout}${cmd.stderr}`.slice(0, 200));
+    } finally { fs.rmSync(work, { recursive: true, force: true }); }
+  });
+
   step('migration lock refusal and release', () => {
     const isMigOut = node(path.join(tmp, '.agent-hub', 'dispatch.mjs'), ['is-migration'], tmp);
     expect(isMigOut, /F1.*isMigration: true/, 'F1 phase migration');

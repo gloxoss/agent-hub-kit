@@ -1,1123 +1,191 @@
 #!/usr/bin/env node
-// Orchestrator driver: lets any agent CLI be the project's orchestrator, with failover.
-// Watches hub autoloop and user WhatsApp replies, manages failovers, quota detection, and steering.
+// Orchestrator driver v2: runs one project's manager agent, with failover, on a small set of modules.
+//   node orch-driver.mjs [repoDir]                 run the daemon (one per project; a lock file prevents two)
+//   node orch-driver.mjs [repoDir] --cmd "status"  run one /orch command and print the reply
+//   node orch-driver.mjs [repoDir] --say "text"    one manager turn with an owner message; reply printed, not sent
+//   flags: --no-autoloop  --no-wa  --help          ORCH_DRY=1 prints the chosen agent and its command, runs nothing
+// Flow: events (autoloop + owner WhatsApp) -> wake filter -> select (quota-ranked) -> runner (caps, guard) -> reply/ledger/report.
+// Costly managers never write code; a side responder answers the owner while the manager is busy.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { spawn, spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-import { runResponder } from '../orchestrator/responder.mjs';
-
-// 1. Auto-load vault environment variables
-const VAULT_ENV = path.join(os.homedir(), '.config', 'devbox', 'vault', 'env');
-if (fs.existsSync(VAULT_ENV)) {
-  try {
-    const lines = fs.readFileSync(VAULT_ENV, 'utf8').split(/\r?\n/);
-    for (const l of lines) {
-      const m = l.match(/^([A-Z0-9_]+)=(.*)$/);
-      if (m && !process.env[m[1]]) {
-        process.env[m[1]] = m[2].trim().replace(/^["']|["']$/g, '');
-      }
-    }
-  } catch {}
-}
+import { spawnSync } from 'node:child_process';
+import { resolveConfig } from '../orchestrator/config.mjs';
+import { loadState, saveState } from '../orchestrator/state.mjs';
+import { EventIntake, ownerText } from '../orchestrator/events.mjs';
+import { candidates, markDown, recordTurn, turnsInLastHour, ownerClaudeNotice, outageMessage, downKey } from '../orchestrator/select.mjs';
+import { runTurn } from '../orchestrator/runner.mjs';
+import { extractReply, extractSessionId, turnStats, failureOf } from '../orchestrator/reply.mjs';
+import { bootstrapPrompt, continuePrompt, responderPrompt, digest } from '../orchestrator/prompt.mjs';
+import { runCommand, readControl } from '../orchestrator/commands.mjs';
+import { createReporter } from '../orchestrator/report.mjs';
+import { shouldRotate, appendLedgerRecord } from '../orchestrator/telemetry.mjs';
 
 const argv = process.argv.slice(2);
 if (argv.includes('--help')) {
-  console.log('usage: node orch-driver.mjs [repoDir] [--order a,b,c] [--no-autoloop] [--say "message"] [--cmd "status|quotas|use <entry>|order a,b|pause|resume|reset|models"]');
+  console.log('usage: node orch-driver.mjs [repoDir] [--cmd "status|quotas|use <id>|order ...|pause|resume|reset|models|shot <route>"] [--say "text"] [--no-autoloop] [--no-wa]');
   process.exit(0);
 }
-const opt = (n) => { const i = argv.indexOf(n); return i >= 0 ? argv.splice(i, 2)[1] : undefined; };
-const orderArg = opt('--order');
-const sayOnce = opt('--say');
+const opt = (name) => { const i = argv.indexOf(name); return i >= 0 ? argv.splice(i, 2)[1] : undefined; };
 const cmdOnce = opt('--cmd');
-const withAutoloop = !argv.includes('--no-autoloop');
-const ROOT = path.resolve(argv.find((a) => !a.startsWith('--')) ?? '.');
-const HUB = ['.agent-hub-orch', '.agent-hub', '.hub'].map((d) => path.join(ROOT, d)).find((d) => fs.existsSync(path.join(d, 'config.json')) || fs.existsSync(path.join(d, 'BOARD.md')));
-if (!HUB) { console.error(`no hub in ${ROOT}: run agentify first`); process.exit(1); }
-const KIT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-const PLAYBOOK = path.join(KIT, 'engine', 'ORCHESTRATOR.md');
-const REPO = path.basename(ROOT);
-const NODE = (process.env.DEVBOX_NODE || os.hostname()).toLowerCase();
-const CFG = (() => {
-  try { return JSON.parse(fs.readFileSync(path.join(HUB, 'config.json'), 'utf8')).orchestrator ?? {}; } catch { return {}; }
-})();
+const sayOnce = opt('--say');
+const noAutoloop = argv.includes('--no-autoloop');
+const noWa = argv.includes('--no-wa');
+const DRY = process.env.ORCH_DRY === '1';
 
-// Exact user-specified failover order:
-// 1. claude-sonnet -> 2. codex -> 3. cursor -> 4. claude-ds1 -> 5. claude-ag2@claude-sonnet-4-6 -> 6. claude-ag2@gemini-3-flash
-const DEFAULT_ORDER = [
-  'claude-sonnet',
-  'claude-cpa@claude-sonnet-5-5',
-  'codex',
-  'cursor',
-  'claude-cpa@grok-4.7',
-  'claude-ds1',
-  'claude-ag2@claude-sonnet-4-6',
-  'claude-ag2@gemini-3-flash'
-];
-
-const BASE_ORDER = (orderArg?.split(',') ?? CFG.order ?? DEFAULT_ORDER).map((s) => s.trim()).filter(Boolean);
-const CONTROL = path.join(HUB, 'orch-control.json');
-const control = () => { try { return JSON.parse(fs.readFileSync(CONTROL, 'utf8')); } catch { return {}; } };
-const setControl = (patch) => fs.writeFileSync(CONTROL, JSON.stringify({ ...control(), ...patch }, null, 2));
-const order = () => control().order ?? BASE_ORDER;
-
-const BATCH_MS = (CFG.batchSeconds ?? 20) * 1000;
-const IDLE_MS = (CFG.idleMinutes ?? 60) * 60_000;
-const DOWN_MS = (CFG.downMinutes ?? 120) * 60_000;          // 2 hour cooldown for real quota exhaustion
-const SHORT_DOWN_MS = (CFG.shortDownMinutes ?? 3) * 60_000;  // 3 min cooldown for transient responding errors
-const TURN_MS = (CFG.turnMinutes ?? 30) * 60_000;
-const SILENCE_MS = (CFG.silenceMinutes ?? 3) * 60_000;      // 3 min maximum silence watchdog
-const STATE = path.join(HUB, 'orch-driver.json');
-const LOG = path.join(HUB, 'runs', 'orchestrator.log');
-const WA = path.join(os.homedir(), '.config', 'waha', 'wa.mjs');
-
-const ICONS = {
-  eye: '\u{1F441}\u{FE0F}',
-  alarm: '\u{1F6A8}',
-  lightning: '\u{26A1}',
-  hourglass: '\u{23F3}',
-  bullet: '\u{2022}',
-  check: '\u{2705}',
-  stop: '\u{26D4}',
-  pause: '\u{23F8}\u{FE0F}',
-  warning: '\u{26A0}\u{FE0F}'
-};
-
-// Strict regex distinguishing true quota exhaustion from transient network/responding errors
-const QUOTA_LIMIT = /(?:usage_limit|rate_limit|rate limit reached|usage limit reached|credit balance is too low|insufficient_quota|exceeded your current quota|account quota exceeded|all \d+ accounts 0% quota|\b429\b|\b402\b|upgrade to plus|quota exceeded)/i;
-
+// Only the few vault values the driver and its agents need; never the whole vault.
 try {
-  const ex = path.join(ROOT, '.git', 'info', 'exclude');
-  for (const file of [STATE, CONTROL]) {
-    const rel = path.relative(ROOT, file).split(path.sep).join('/');
-    if (fs.existsSync(ex) && !fs.readFileSync(ex, 'utf8').includes(rel)) fs.appendFileSync(ex, `\n${rel}\n`);
+  for (const line of fs.readFileSync(path.join(os.homedir(), '.config', 'devbox', 'vault', 'env'), 'utf8').split(/\r?\n/)) {
+    const m = line.match(/^(CLIPROXY_[A-Z]+|CLAUDE_CODE_OAUTH_TOKEN|OPENROUTER_API_KEY|DEEPSEEK_API_KEY)=(.*)$/);
+    if (m && !process.env[m[1]]) process.env[m[1]] = m[2].trim().replace(/^["']|["']$/g, '');
   }
-} catch {}
+} catch { /* no vault on this machine */ }
 
-const st = (() => { try { return JSON.parse(fs.readFileSync(STATE, 'utf8')); } catch { return { sessions: {}, until: {} }; } })();
-if (!st.until) st.until = {};
-const save = () => fs.writeFileSync(STATE, JSON.stringify(st, null, 2));
-const log = (s) => { const line = `${new Date().toISOString().slice(5, 19)} ${s}`; console.log(line); fs.mkdirSync(path.dirname(LOG), { recursive: true }); fs.appendFileSync(LOG, line + '\n'); };
-const notify = (text) => fs.existsSync(WA) && spawn(process.execPath, [WA, 'send', text], { cwd: ROOT, stdio: 'ignore', windowsHide: true });
-
-const healthy = (agent) => !st.until[agent] || st.until[agent] < Date.now();
-const until = (agent) => new Date(st.until[agent]).toTimeString().slice(0, 5);
-
-// Real-time proxy quota check helper
-async function checkProxyQuota(agent, timeoutMs = 3500) {
-  const [name, model] = agent.split('@');
-  if (name === 'claude-cpa' || name.startsWith('cpa-')) {
-    const targetModel = model || 'claude-sonnet-5-5';
-    try {
-      const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), timeoutMs);
-      const res = await fetch('http://127.0.0.1:8317/v1/messages', {
-        method: 'POST',
-        signal: ctrl.signal,
-        headers: { 'Content-Type': 'application/json', 'x-api-key': 'sk-cliproxyapi-local', 'anthropic-version': '2023-06-01' },
-        body: JSON.stringify({ model: targetModel, max_tokens: 1, messages: [{ role: 'user', content: 'ping' }] })
-      });
-      clearTimeout(t);
-      if (res.ok) return { ok: true };
-      const isQ = res.status === 429 || res.status === 402;
-      return { ok: false, reason: `HTTP ${res.status}`, isQuota: isQ };
-    } catch (e) {
-      return { ok: false, reason: e.name === 'AbortError' ? 'probe timeout (>3.5s)' : e.message, isQuota: false };
-    }
-  }
-
-  if (name.startsWith('claude-ag') || name.startsWith('ag-')) {
-    const targetModel = model || 'claude-sonnet-4-6';
-    try {
-      const res = await fetch('http://127.0.0.1:8080/account-limits', { signal: AbortSignal.timeout(2000) });
-      if (res.ok) {
-        const data = await res.json();
-        const accounts = data.accounts || [];
-        let available = 0;
-        let earliestReset = null;
-        for (const a of accounts) {
-          const lim = a.limits?.[targetModel];
-          const rateLim = a.modelRateLimits?.[targetModel];
-          const isLimited = rateLim?.isRateLimited || lim?.remainingFraction === 0;
-          if (!isLimited) available++;
-          else if (lim?.resetTime) {
-            const rt = new Date(lim.resetTime);
-            if (!earliestReset || rt < earliestReset) earliestReset = rt;
-          }
-        }
-        if (available === 0 && accounts.length > 0) {
-          return { isQuota: true, reason: `all ${accounts.length} accounts 0% quota`, resetTime: earliestReset?.getTime() };
-        }
-        return { isQuota: false, available };
-      }
-    } catch {}
-  }
-  return { isQuota: false };
-}
-
-// Fast Preflight Probe: test if model API is alive before allocating heavy turn
-async function pingAgent(agent, timeoutMs = 3500) {
-  const [name, model] = agent.split('@');
-
-  // Fast check: check proxy limits first
-  const proxyCheck = await checkProxyQuota(agent);
-  if (proxyCheck.isQuota) {
-    return { ok: false, reason: proxyCheck.reason, isQuota: true, resetTime: proxyCheck.resetTime };
-  }
-
-  if (name === 'claude-sonnet' || name === 'claude') {
-    if (!process.env.CLAUDE_CODE_OAUTH_TOKEN) {
-      return { ok: false, reason: 'CLAUDE_CODE_OAUTH_TOKEN missing in vault', isQuota: false };
-    }
-    return { ok: true };
-  }
-
-  if (name === 'codex') {
-    // Probe codex quickly
-    try {
-      const probe = spawnSync('codex', ['exec', '--skip-git-repo-check', 'ping'], {
-        timeout: 3500,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe']
-      });
-      const combined = (probe.stdout || '') + (probe.stderr || '');
-      if (QUOTA_LIMIT.test(combined)) {
-        return { ok: false, reason: 'Codex usage limit reached', isQuota: true };
-      }
-      return { ok: true };
-    } catch {
-      return { ok: true };
-    }
-  }
-
-  if (name === 'cursor' || name === 'cursor-agent') {
-    return { ok: true };
-  }
-
-  if (name === 'claude-ds1') {
-    try {
-      const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), timeoutMs);
-      const res = await fetch('https://api.deepseek.com/models', {
-        headers: { 'Authorization': `Bearer ${process.env.DEEPSEEK_API_KEY}` },
-        signal: ctrl.signal
-      });
-      clearTimeout(t);
-      if (res.status === 402) return { ok: false, reason: 'DeepSeek insufficient balance', isQuota: true };
-      if (res.ok) return { ok: true };
-      return { ok: false, reason: `DeepSeek HTTP ${res.status}`, isQuota: res.status === 402 || res.status === 429 };
-    } catch (e) {
-      return { ok: false, reason: e.name === 'AbortError' ? 'probe timeout (>3.5s)' : e.message, isQuota: false };
-    }
-  }
-
-  if (name === 'claude-cpa' || name.startsWith('cpa-')) {
-    const targetModel = model || 'claude-sonnet-5-5';
-    try {
-      const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), timeoutMs);
-      const res = await fetch('http://127.0.0.1:8317/v1/messages', {
-        method: 'POST',
-        signal: ctrl.signal,
-        headers: { 'Content-Type': 'application/json', 'x-api-key': 'sk-cliproxyapi-local', 'anthropic-version': '2023-06-01' },
-        body: JSON.stringify({ model: targetModel, max_tokens: 1, messages: [{ role: 'user', content: 'ping' }] })
-      });
-      clearTimeout(t);
-      if (res.ok) return { ok: true };
-      const isQ = res.status === 429 || res.status === 402;
-      return { ok: false, reason: `HTTP ${res.status}`, isQuota: isQ };
-    } catch (e) {
-      return { ok: false, reason: e.name === 'AbortError' ? 'probe timeout (>3.5s)' : e.message, isQuota: false };
-    }
-  }
-
-  if (name.startsWith('claude-ag') || name.startsWith('ag-')) {
-    const targetModel = model || 'claude-sonnet-4-6';
-    try {
-      const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), timeoutMs);
-      const res = await fetch('http://127.0.0.1:8080/v1/messages', {
-        method: 'POST',
-        signal: ctrl.signal,
-        headers: { 'Content-Type': 'application/json', 'x-api-key': 'dummy', 'anthropic-version': '2023-06-01' },
-        body: JSON.stringify({ model: targetModel, max_tokens: 1, messages: [{ role: 'user', content: 'ping' }] })
-      });
-      clearTimeout(t);
-      if (res.ok) return { ok: true };
-      const isQ = res.status === 429 || res.status === 402;
-      return { ok: false, reason: `HTTP ${res.status}`, isQuota: isQ };
-    } catch (e) {
-      return { ok: false, reason: e.name === 'AbortError' ? 'probe timeout (>3.5s)' : e.message, isQuota: false };
-    }
-  }
-
-  return { ok: true };
-}
-
-const downFor = (r, isQuota) => {
-  // 429 rate-limits (RPM / per-minute token spikes) should cool down for 2 minutes, not 2 hours!
-  if (/\b429\b|too many requests|rate.?limit/i.test(r.out) && !/all \d+ accounts 0%|quota exhausted/i.test(r.out)) {
-    return 2 * 60_000;
-  }
-  if (!isQuota) return SHORT_DOWN_MS; // 3 min only for transient responding glitches
-  const t = r.out?.match(/resets? (\d{1,2}(?::\d\d)?\s*(?:am|pm)?)/i)?.[1];
-  if (t) {
-    const now = new Date();
-    const d = new Date(now);
-    const [, h, m, ap] = t.match(/(\d{1,2})(?::(\d\d))?\s*(am|pm)?/i) ?? [];
-    if (h) {
-      let hr = parseInt(h, 10);
-      if (ap && ap.toLowerCase() === 'pm' && hr < 12) hr += 12;
-      if (ap && ap.toLowerCase() === 'am' && hr === 12) hr = 0;
-      d.setHours(hr, parseInt(m ?? '0', 10), 0, 0);
-      if (d < now) d.setDate(d.getDate() + 1);
-      return Math.max(d - now, 60_000);
-    }
-  }
-  const minMatch = r.out?.match(/resets? (?:in|after) (\d+)\s*m/i);
-  if (minMatch) return parseInt(minMatch[1], 10) * 60_000;
-  return DOWN_MS;
+const cfg = resolveConfig(path.resolve(argv.find((a) => !a.startsWith('--')) ?? '.'));
+process.chdir(cfg.root);
+const o = cfg.orchestrator;
+const st = loadState(cfg.hubPath);
+st.sessions = Object.fromEntries(Object.entries(st.sessions ?? {}).filter(([, v]) => v && typeof v === 'object'));   // drop pre-v2 string sessions
+const save = () => saveState(cfg.hubPath, st);
+const LOG = path.join(cfg.hubPath, 'runs', 'orchestrator.log');
+const WA = path.join(os.homedir(), '.config', 'waha', 'wa.mjs');
+const log = (s) => {
+  const line = `${new Date().toISOString().slice(5, 19)} ${s}`;
+  console.log(line);
+  try { fs.mkdirSync(path.dirname(LOG), { recursive: true }); fs.appendFileSync(LOG, line + '\n'); } catch { /* log is best effort */ }
 };
 
-function command(entry, prompt, sid) {
-  const [agent, model] = entry.split('@');
-  const mFlag = model ? ['--model', model] : [];
-
-  if (agent === 'claude' || agent === 'claude-sonnet') {
-    return [path.join(os.homedir(), '.local', 'bin', 'claude'), [
-      '-p', prompt,
-      '--dangerously-skip-permissions',
-      '--output-format', 'stream-json',
-      '--verbose',
-      ...mFlag,
-      ...(sid ? ['--resume', sid] : ['--session-id', st.pending = crypto.randomUUID()])
-    ]];
-  }
-  if (agent === 'cursor-agent' || agent === 'cursor') {
-    return ['cursor-agent', ['-p', '--force', '--output-format', 'stream-json', prompt]];
-  }
-  if (agent.startsWith('codex')) {
-    return ['codex', [
-      'exec',
-      '--skip-git-repo-check',
-      '--sandbox', 'workspace-write',
-      prompt,
-      ...(sid ? ['--resume', sid] : [])
-    ]];
-  }
-  if (agent === 'claude-ds1') {
-    return [path.join(os.homedir(), '.claude-launchers', 'claude-ds1'), [
-      '-p', prompt,
-      '--dangerously-skip-permissions',
-      '--output-format', 'stream-json',
-      '--verbose',
-      ...(sid ? ['--resume', sid] : ['--session-id', st.pending = crypto.randomUUID()])
-    ]];
-  }
-  if (agent === 'claude-cpa' || agent.startsWith('cpa-')) {
-    return [path.join(os.homedir(), '.claude-launchers', 'claude-cpa'), [
-      '-p', prompt,
-      '--dangerously-skip-permissions',
-      '--output-format', 'stream-json',
-      '--verbose',
-      ...mFlag,
-      ...(sid ? ['--resume', sid] : ['--session-id', st.pending = crypto.randomUUID()])
-    ]];
-  }
-  if (agent.startsWith('claude-ag') || agent.startsWith('ag-')) {
-    return [path.join(os.homedir(), '.claude-launchers', 'claude-ag2'), [
-      '-p', prompt,
-      '--dangerously-skip-permissions',
-      '--output-format', 'stream-json',
-      '--verbose',
-      ...mFlag,
-      ...(sid ? ['--resume', sid] : ['--session-id', st.pending = crypto.randomUUID()])
-    ]];
-  }
-  return [agent, ['-p', prompt, ...mFlag, ...(sid ? ['--resume', sid] : ['--session-id', st.pending = crypto.randomUUID()])]];
+// WhatsApp. Replies to the owner use the plain path (never throttled or deduplicated); everything else is --auto (budgeted, merged).
+let toTerminal = false;
+function wa(args) {
+  if (toTerminal || noWa || DRY || !fs.existsSync(WA)) return;
+  spawnSync(process.execPath, [WA, ...args], { cwd: cfg.root, env: { ...process.env, AGENT_PROJECT: cfg.projectName }, timeout: 60_000, windowsHide: true });
 }
+const sendReply = (text) => (toTerminal ? console.log(text) : wa(['send', text]));
+const sendAuto = (text) => (toTerminal ? console.log(text) : wa(['send', '--auto', text]));
+const sendImage = (file, caption) => wa(['image', file, caption]);
 
-const sessionFrom = (entry, out) => {
-  const agent = entry.split('@')[0];
-  if (agent.startsWith('codex')) return out.match(/session id:\s*([0-9a-f-]{36})/i)?.[1];
-  return st.pending;
-};
-
-function resolveLane(raw) {
-  if (!raw) return '';
-  let str = raw.replace(/\\(["'])/g, '$1').replace(/\\/g, '').trim();
-
-  let modelFlag = null;
-  const modelMatch = str.match(/(?:--?model|-m|\bmodel)\s*(?:=|\s+)\s*["']?\s*([^"'\s]+)\s*["']?/i);
-  if (modelMatch) {
-    modelFlag = modelMatch[1].replace(/["']/g, '').trim();
-    str = str.replace(modelMatch[0], '').trim();
-  }
-
-  str = str.replace(/\s*·\s*/g, '@').replace(/\s+/g, ' ');
-  let [agentPart, modelPart] = str.split('@');
-  agentPart = (agentPart || '').trim().toLowerCase();
-  modelPart = (modelFlag || modelPart || '').trim().toLowerCase();
-
-  if (agentPart === 'sonnet' || agentPart === 'claude' || agentPart === 'claude-sonnet') return 'claude-sonnet';
-  if (agentPart === 'codex') return 'codex';
-  if (agentPart === 'cursor') return 'cursor';
-  if (agentPart === 'ds1' || agentPart === 'claude-ds1' || agentPart === 'deepseek') return 'claude-ds1';
-  if (agentPart === 'ag2-sonnet' || (agentPart === 'claude-ag2' && modelPart.includes('sonnet'))) return 'claude-ag2@claude-sonnet-4-6';
-  if (agentPart === 'gemini' || agentPart === 'flash' || (agentPart === 'claude-ag2' && modelPart.includes('gemini'))) return 'claude-ag2@gemini-3-flash';
-
-  return modelPart ? `${agentPart}@${modelPart}` : agentPart;
-}
-
-async function orchCommand(text) {
-  const [rawVerb = 'status', ...rest] = text.trim().split(/\s+/);
-  const verb = rawVerb.toLowerCase();
-  const restStr = rest.join(' ');
-  const arg = resolveLane(verb === 'model' ? `model ${restStr}` : restStr);
-
-  const pretty = (e) => e.replace('@', ' \u{2022} ');
-  const list = () => order().map((e, i) => `${i + 1}. ${healthy(e) ? ICONS.check : ICONS.stop} ${pretty(e)}${healthy(e) ? '' : `  (down until ${until(e)})`}`).join('\n');
-  const onDuty = () => order().find(healthy);
-  const HELP = '_/orch status \u{2022} quotas \u{2022} use <lane> \u{2022} order \u{2022} pause \u{2022} resume \u{2022} reset_';
-
-  switch (verb) {
-    case 'quotas':
-    case 'quota': {
-      try {
-        const qp = path.join(os.homedir(), '.local', 'bin', 'check-quotas.mjs');
-        if (fs.existsSync(qp)) {
-          const out = spawnSync(process.execPath, [qp], { encoding: 'utf8' }).stdout;
-          const q = JSON.parse(out);
-          const lines = [
-            `*${ICONS.lightning} Live Quota Health Check*`,
-            `• *Claude 3.7 Sonnet:* ${process.env.CLAUDE_CODE_OAUTH_TOKEN ? 'Active (OAuth Token OK)' : 'No Token'}`,
-            `• *Codex / ChatGPT Plus:* ${healthy('codex') ? 'Ready' : 'Usage Limit Cooling Down'}`,
-            `• *Cursor Agent:* Ready`,
-            `• *DeepSeek (claude-ds1):* ${healthy('claude-ds1') ? 'Ready' : '402 Insufficient Balance'}`,
-            `• *Antigravity CloudCode Proxy:*`,
-            `   - Sonnet 4.6: ${q.antigravity?.['claude-sonnet-4-6']?.status || 'Down'} (${q.antigravity?.['claude-sonnet-4-6']?.available ?? 0}/${q.antigravity?.['claude-sonnet-4-6']?.total ?? 15})`,
-            `   - Opus Thinking: ${q.antigravity?.['claude-opus-4-6-thinking']?.status || 'Down'} (${q.antigravity?.['claude-opus-4-6-thinking']?.available ?? 0}/${q.antigravity?.['claude-opus-4-6-thinking']?.total ?? 15})`,
-            `   - Gemini 3 Flash: ${q.antigravity?.['gemini-3-flash']?.status || 'OK'} (${q.antigravity?.['gemini-3-flash']?.available ?? 15}/${q.antigravity?.['gemini-3-flash']?.total ?? 15} accounts active)`
-          ];
-          return lines.join('\n');
-        }
-      } catch (e) {
-        return `Quota check error: ${e.message}`;
-      }
-      return 'Quota checker unavailable.';
-    }
-    case 'use':
-    case 'model': {
-      if (!arg) return 'Usage: /orch use <lane>\nShortcuts: sonnet, codex, cursor, ds1, ag2-sonnet, gemini';
-      setControl({ order: [arg, ...order().filter((e) => e !== arg)] });
-      delete st.until[arg]; save();
-      return `\u{1F449} Next turn: *${pretty(arg)}*\nOrder:\n${list()}`;
-    }
-    case 'order': {
-      const items = restStr.split(',').map((x) => resolveLane(x.trim())).filter(Boolean);
-      if (!items.length) return 'Usage: /orch order a,b,c   (or /orch order default)';
-      setControl({ order: items[0] === 'default' ? undefined : items });
-      return `\u{1F501} New order:\n${list()}`;
-    }
-    case 'pause': setControl({ paused: true }); return `${ICONS.pause} Paused. Events are kept and handled after /orch resume.`;
-    case 'resume': setControl({ paused: false }); return `\u{25B6}\u{FE0F} Resumed. On duty: *${pretty(onDuty() ?? 'none')}*`;
-    case 'reset': st.until = {}; save(); return `\u{267B}\u{FE0F} Every agent marked ready again.\nOrder:\n${list()}`;
-    default: {
-      const c = control();
-      return [`${c.paused ? `${ICONS.pause} *Paused*\n` : ''}On duty: *${pretty(onDuty() ?? 'none available')}*${st.current && st.current !== onDuty() ? `  (last turn: ${pretty(st.current)})` : ''}`,
-        'Order:', list(), HELP].join('\n');
-    }
-  }
-}
-
-let currentTurn = null; // { child, agent, startedAt, isUser, abort: (reason) => void }
-
-function turn(agent, prompt, isUserTurn = false) {
-  return new Promise((resolve) => {
-    const sid = isUserTurn ? undefined : st.sessions[agent];
-    const [cmd, args] = command(agent, prompt, sid);
-    const orchSubagentEnv = {
-      CLAUDE_CODE_SUBAGENT_MODEL: process.env.ORCH_SUBAGENT_MODEL || CFG.subagentModel || 'claude-3-5-haiku-20241022',
-      CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1',
-      CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS: String(CFG.maxConcurrentSubagents ?? 2),
-      CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION: String(CFG.maxSubagentsPerSession ?? 5),
-      CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: '1',
-      ANTHROPIC_DEFAULT_HAIKU_MODEL: 'claude-3-5-haiku-20241022'
-    };
-
-    const isPosix = process.platform !== 'win32';
-    const child = spawn(cmd, args, {
-      cwd: ROOT,
-      detached: isPosix,
-      env: {
-        ...process.env,
-        ...orchSubagentEnv,
-        AGENT_PROJECT: REPO,
-        PATH: [path.join(os.homedir(), '.claude-launchers'), path.join(os.homedir(), '.local', 'bin'), process.env.PATH].join(path.delimiter)
-      },
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
-      shell: process.platform === 'win32'
-    });
-
-    let out = '';
-    let quietSince = Date.now();
-    const take = (d) => { out += d; quietSince = Date.now(); fs.appendFileSync(LOG, d); };
-    child.stdout.on('data', take);
-    child.stderr.on('data', take);
-
-    const killTree = () => {
-      if (!child.pid) return;
-      try {
-        if (isPosix) process.kill(-child.pid, 'SIGTERM');
-        else child.kill('SIGTERM');
-      } catch {}
-      try { child.kill('SIGTERM'); } catch {}
-      try { spawn('pkill', ['-TERM', '-g', String(child.pid)], { stdio: 'ignore' }); } catch {}
-      try { spawn('pkill', ['-TERM', '-P', String(child.pid)], { stdio: 'ignore' }); } catch {}
-      
-      setTimeout(() => {
-        try {
-          if (isPosix) process.kill(-child.pid, 'SIGKILL');
-          else child.kill('SIGKILL');
-        } catch {}
-        try { child.kill('SIGKILL'); } catch {}
-        try { spawn('pkill', ['-KILL', '-g', String(child.pid)], { stdio: 'ignore' }); } catch {}
-        try { spawn('pkill', ['-KILL', '-P', String(child.pid)], { stdio: 'ignore' }); } catch {}
-      }, 500);
-    };
-
-    let preempted = false;
-    let doneCalled = false;
-
-    const done = (code, text) => {
-      if (doneCalled) return;
-      doneCalled = true;
-      clearTimeout(timer);
-      clearInterval(watchdog);
-      currentTurn = null;
-      resolve({ code, out: text, preempted });
-    };
-
-    currentTurn = {
-      agent,
-      child,
-      isUser: isUserTurn,
-      startedAt: Date.now(),
-      abort: (reason) => {
-        log(`[turn] abort requested (${reason}) for ${agent}`);
-        preempted = true;
-        out += `\n[driver] preempted: ${reason}\n`;
-        killTree();
-        setTimeout(() => {
-          if (!doneCalled) {
-            log(`[turn] child did not exit in 350ms after abort; force-resolving turn`);
-            done(143, out);
-          }
-        }, 350);
-      }
-    };
-
-    const timer = setTimeout(() => killTree(), TURN_MS);
-    const watchdog = setInterval(() => {
-      if (Date.now() - quietSince > SILENCE_MS) {
-        out += `\n[driver] no output for ${SILENCE_MS / 60000} min: timeout\n`;
-        killTree();
-      }
-    }, 15_000);
-
-    child.on('error', (e) => done(-1, String(e.message)));
-    child.on('close', (code) => done(code, out));
-  });
-}
-
-
-function extractTurnTokens(text) {
-  if (!text) return null;
-  const lines = text.split('\n');
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i].trim();
-    if (line.includes('usage') || line.includes('modelUsage')) {
-      try {
-        const obj = JSON.parse(line);
-        if (obj.usage) {
-          return {
-            input: obj.usage.input_tokens || 0,
-            output: obj.usage.output_tokens || 0,
-            cached: obj.usage.cache_read_input_tokens || obj.usage.cached_input_tokens || 0,
-            total: (obj.usage.input_tokens || 0) + (obj.usage.output_tokens || 0)
-          };
-        }
-      } catch {}
-    }
-  }
-  return null;
-}
-
-function buildFleetContext() {
-  let commit = 'HEAD';
-  try {
-    commit = execSync('git log -1 --pretty=format:"%h - %s"', { cwd: ROOT, encoding: 'utf8' }).trim();
-  } catch {}
-  
-  let inProgress = [], ready = [], review = [];
-  try {
-    const hubDir = ['.agent-hub-orch', '.agent-hub', '.hub']
-      .map(d => path.join(ROOT, d))
-      .find(d => fs.existsSync(d)) || path.join(ROOT, '.hub');
-    const board = fs.readFileSync(path.join(hubDir, 'BOARD.md'), 'utf8');
-    const lines = board.split('\n');
-    let section = '';
-    for (const l of lines) {
-      if (l.startsWith('## ')) { section = l.slice(3).trim().toLowerCase(); continue; }
-      if (!l.startsWith('|') || l.includes('Task') || l.includes('---')) continue;
-      const cols = l.split('|').map(s => s.trim()).filter(Boolean);
-      if (cols.length >= 3) {
-        const item = { id: cols[0], title: cols[2] || '', assignee: cols[3] || cols[4] || 'unassigned' };
-        if (section.includes('progress')) inProgress.push(item);
-        else if (section.includes('ready')) ready.push(item);
-        else if (section.includes('review')) review.push(item);
-      }
-    }
-  } catch {}
-
-  let handoffSnippet = '';
-  try {
-    const handoffPath = path.join(ROOT, 'docs', 'HANDOFF.md');
-    if (fs.existsSync(handoffPath)) {
-      const handoff = fs.readFileSync(handoffPath, 'utf8');
-      const m = handoff.match(/## Current state[\s\S]*?(?=\n## Current state|\n## Next|$)/);
-      if (m) handoffSnippet = m[0].split('\n').slice(0, 12).join('\n').trim();
-    }
-  } catch {}
-
-  return {
-    commit,
-    inProgress: inProgress.slice(0, 6),
-    ready: ready.slice(0, 6),
-    review: review.slice(0, 6),
-    handoffSnippet
-  };
-}
-
-// Proactive Orchestrator Prompt with Subagent Concurrency rules
-const bootstrap = (agent, takeover) => {
-  const isClaudeOrCodex = agent === 'claude-sonnet' || agent === 'claude' || agent.startsWith('codex');
-  const ctx = buildFleetContext();
-
-  const inProgText = ctx.inProgress.length 
-    ? ctx.inProgress.map(p => `  • \`${p.id}\` (${p.assignee}): ${p.title}`).join('\n')
-    : '  • None currently in-flight';
-
-  const reviewText = ctx.review.length
-    ? ctx.review.map(r => `  • \`${r.id}\`: ${r.title}`).join('\n')
-    : '  • None awaiting review';
-
-  const readyText = ctx.ready.length
-    ? ctx.ready.map(r => `  • \`${r.id}\`: ${r.title}`).join('\n')
-    : '  • Backlog empty';
-
-  return [
-    `You are the active orchestrator for "${REPO}" on "${NODE}" (turn agent: ${agent}).`,
-    `Read and follow ${PLAYBOOK} now.`,
-    ``,
-    `================================================================================`,
-    `📍 WHERE ARE WE & CURRENT FLEET OPERATIONAL CONTEXT (FRESH SESSION BRIEFING):`,
-    `================================================================================`,
-    `• Repository: ${REPO} • Node: ${NODE}`,
-    `• Latest Commit: \`${ctx.commit}\``,
-    ``,
-    `🔨 IN-FLIGHT WORKERS & RUNNING TASKS:`,
-    inProgText,
-    ``,
-    `🔍 REVIEW QUEUE (CHECK FIRST):`,
-    reviewText,
-    ``,
-    `🎯 READY TO DISPATCH (TOP BACKLOG):`,
-    readyText,
-    ``,
-    ctx.handoffSnippet ? `📝 PREVIOUS SESSION RECENT STATE & DECISIONS:\n${ctx.handoffSnippet}\n` : '',
-    `================================================================================`,
-    ``,
-    `YOUR CORE MISSION IN THIS TURN:`,
-    `0. CRITICAL OWNER INVARIANT (ABSOLUTE RULE):`,
-    `   - CLAUDE IS RESERVED EXCLUSIVELY FOR ORCHESTRATION, NEVER FOR TASK EXECUTION.`,
-    `   - NEVER assign, spawn, or dispatch Claude (claude, claude-sonnet, claude-cpa, claude-ag2-sonnet) to build, code, or execute tasks.`,
-    `   - All worker build jobs MUST be assigned to non-Claude workers: cursor, opencode, agy, claude-ag2-gemini, oc-build.`,
-    `1. REVIEW QUEUE FIRST:`,
-    `   - Run: \`node .agent-hub-orch/dispatch.mjs list\` and check .agent-hub-orch/BOARD.md.`,
-    `   - Inspect any completed tasks in REVIEW.`,
-    `   - If verification and tests pass, accept immediately: \`node .agent-hub-orch/hub.mjs accept <task-id>\`.`,
-    `2. DISPATCH NEXT WORK:`,
-    `   - Keep worker lanes busy. Check ready tasks in the board backlog.`,
-    `   - Dispatch tasks to available lanes using: \`node .agent-hub-orch/dispatch.mjs run auto <task-id>\`.`,
-    !isClaudeOrCodex ? [
-      `3. WORKER CONCURRENCY RULE (CRITICAL FOR ${agent.toUpperCase()}):`,
-      `   - You are running on a non-Claude/non-Codex coordinator (${agent}).`,
-      `   - You may use AT MOST 3 TO 5 workers of your own engine simultaneously so you do NOT drain your quota.`,
-      `   - All remaining tasks MUST be dispatched to alternative active builders (e.g. cursor, opencode, agy, claude-oc1).`
-    ].join('\n') : '',
-    `4. NO ROUTINE TICK SPAM (CRITICAL ANTI-SPAM RULE):`,
-    `   - NEVER send routine tick, status-quo, or queue monitoring messages to WhatsApp.`,
-    `   - All scheduled 15m briefings are handled automatically by orch-report-15m.mjs.`,
-    `   - Use \`wa send\` ONLY when replying directly to a user question, asking for a blocking decision, or delivering accepted milestone proof (\`wa image\`).`,
-    `5. HANDOFF: Update docs/HANDOFF.md before ending your turn.`,
-    takeover ? `You take over from ${takeover}. Read docs/HANDOFF.md first, then proceed.` : '',
-    `\nHANDLE THE EVENTS BELOW.`
-  ].filter(Boolean).join('\n');
-};
-
-function extractReply(out) {
-  if (!out) return '';
-  const lines = out.trim().split('\n');
-  let finalResult = '';
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i].trim();
-    if (line.startsWith('{') && line.endsWith('}')) {
-      try {
-        const p = JSON.parse(line);
-        if (p.type === 'result' && typeof p.result === 'string' && p.result.trim()) {
-          finalResult = p.result.trim();
-          break;
-        }
-        if (p.result && typeof p.result === 'string' && p.result.trim()) {
-          finalResult = p.result.trim();
-          break;
-        }
-      } catch {}
-    }
-  }
-
-  // If finalResult is a generic status report, intercept it and find the actual drafted conversational response
-  const isGenericReport = /^\*+\s*Orchestrator Status Report/i.test(finalResult);
-  if (isGenericReport) {
-    // 1. Check if thinking block drafted a direct answer
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const line = lines[i].trim();
-      if (line.startsWith('{') && line.endsWith('}')) {
-        try {
-          const p = JSON.parse(line);
-          const thinking = p.message?.content?.find((c) => c.type === 'thinking')?.thinking || '';
-          const draftMatch = thinking.match(/(?:draft the response|response to the user|answer to the operator)[:\s]*\n*["“]([\s\S]+?)["”]/i);
-          if (draftMatch && draftMatch[1].trim().length > 20) {
-            return draftMatch[1].trim();
-          }
-        } catch {}
-      }
-    }
-    // 2. Check earlier assistant text messages that are not status reports
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const line = lines[i].trim();
-      if (line.startsWith('{') && line.endsWith('}')) {
-        try {
-          const p = JSON.parse(line);
-          if (p.type === 'assistant' && p.message?.content) {
-            const texts = p.message.content
-              .filter((c) => c.type === 'text' && c.text && !/^\*+\s*Orchestrator Status Report/i.test(c.text.trim()))
-              .map((c) => c.text.trim())
-              .filter(Boolean);
-            if (texts.length) return texts.join('\n\n');
-          }
-        } catch {}
-      }
-    }
-  }
-
-  if (finalResult && !isGenericReport) return finalResult;
-  if (finalResult) return finalResult;
-
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i].trim();
-    if (line.startsWith('{') && line.endsWith('}')) {
-      try {
-        const p = JSON.parse(line);
-        if (p.type === 'assistant' && p.message?.content) {
-          const texts = p.message.content
-            .filter((c) => c.type === 'text' && c.text)
-            .map((c) => c.text.trim())
-            .filter(Boolean);
-          if (texts.length) return texts.join('\n\n');
-        }
-      } catch {}
-    }
-  }
-  const clean = lines.filter((l) => !l.startsWith('{') && !l.startsWith('[driver]') && !l.startsWith('10-')).join('\n').trim();
-  if (clean) return clean.length > 3500 ? clean.slice(0, 3500) + '\n\n...(truncated for WhatsApp length)' : clean;
-  return '';
-}
-
-function buildSteerPrompt(agent, userTexts) {
-  const nameMatch = userTexts.match(/(?:my name is|i am|call me|je m'appelle|smiti)\s+([a-zA-Z\u0600-\u06FF]+)/i);
-  if (nameMatch) {
-    st.operatorName = nameMatch[1];
-    save();
-    log(`[handle] Learned operator name: "${st.operatorName}"`);
-  }
-
-  const opName = st.operatorName || 'Ossama (Epioso)';
-  const wantsDetails = /\b(?:detail|details|full doc|explain all|breakdown|report|deep dive|comprehensive|koulchi|tafasil)\b/i.test(userTexts);
-  const wantsScreenshots = /\b(?:screenshot|screenshots|screen|screens|image|images|pic|pics|photo|photos|capture|snap|snap-route|show me|proof|settled|arani|chof|tsawer|taswira)\b/i.test(userTexts);
-  const isActionDirective = /\b(?:build|create|make|add|fix|implement|run|start|dispatch|rework|generate|update|code|write|setup|develop|resume|restart|pause|cancel|retry)\b/i.test(userTexts);
-  const isStatusQuery = /\b(?:status|what is running|what are you doing|state|progress|why|who|model|quota|tokens|fleet|board|tasks|in-flight|backlog|audit|check)\b/i.test(userTexts);
-
-  let directiveInstructions = [];
-  if (wantsScreenshots) {
-    directiveInstructions = [
-      `2. SCREENSHOT / VISUAL PROOF REQUEST DETECTED: The operator explicitly asked for screenshot evidence of page(s) or components.`,
-      `   - DO NOT reply with conversational filler or promise to check them later! Take action right now in this turn.`,
-      `   - Run the snapshot tool for each requested route using Bash:`,
-      `     NODE_PATH=/home/dev/projects/lango-english-center-project-fully/lango-app/node_modules node /home/dev/projects/lango-english-center-project-fully/lango-app/scripts/snap-route.cjs <route> /tmp/<filename>.png`,
-      `   - Immediately send each captured screenshot to the operator on WhatsApp:`,
-      `     node /home/dev/.config/waha/wa.mjs image /tmp/<filename>.png "📸 <Route / Task ID> • <Status>"`,
-      `   - In your final response, confirm to ${opName} which screenshots were captured and delivered, including the route status.`
-    ];
-  } else if (isActionDirective) {
-    directiveInstructions = [
-      `2. ACTION DIRECTIVE DETECTED: The operator asked you to build, fix, create, or run something.`,
-      `   - You are the Autonomous Orchestrator. Take full care of all settings, context scoping, skill bindings, and model selection.`,
-      `   - Create a complete A-to-Z task brief in '.agent-hub-orch/tasks/<TASK-ID>.md' following '.agent-hub-orch/templates/brief.md':`,
-      `     * Scope: define exact 1 to 3 files to create or modify. Prevent whole-repo reading to save tokens.`,
-      `     * Skills: select 2 to 4 exact skills from '.agent-hub-orch/skills/' (verify with 'node .agent-hub-orch/tools/skills.mjs check <TASK-ID>').`,
-      `     * Logic: write clear step-by-step implementation recipe so the worker finishes in 1 turn without guessing.`,
-      `     * Test: define exact verification command (e.g. 'npx vitest run ... && npm run check:branch-scope').`,
-      `   - Select the optimal execution engine (QuotaShield):`,
-      `     * Fast & Free / UI / Routine edits: dispatch to 'claude-ag2-gemini' (Gemini 3 Flash, 15 rotating accounts) or 'opencode' or 'cursor' (composer-2.5).`,
-      `     * Heavy Reasoning / Math / Complex Architecture: dispatch to 'codex' with 'model_reasoning_effort="low"'.`,
-      `   - Dispatch the task: 'node .agent-hub-orch/dispatch.mjs run <executor> auto <TASK-ID>'.`,
-      `   - Update docs/HANDOFF.md.`,
-      `   - Reply directly to ${opName} on WhatsApp: announce the task created, the assigned executor, and that you'll update them with live screenshot proof when done.`
-    ];
-  } else if (wantsDetails || isStatusQuery) {
-    directiveInstructions = [
-      `2. OPERATIONAL STATUS / BRIEFING REQUEST DETECTED:`,
-      `   - Use tools (Read .agent-hub-orch/BOARD.md, check processes, inspect tasks) to gather real ground truth.`,
-      `   - Provide a complete, structured briefing with clear headers:`,
-      `     * Current Status: high-level progress on the platform.`,
-      `     * Completed & Accepted Work: recent pages and features verified and merged.`,
-      `     * Active Work in Flight: exact tasks and models currently running.`,
-      `     * Blockers & Next Actions: any hurdles or immediate next priorities.`,
-      `   Format it clearly with clean markdown headers and bullet points.`
-    ];
-  } else {
-    directiveInstructions = [
-      `2. Answer ONLY what the operator is asking directly in 1-3 concise, grounded sentences.`,
-      `3. Never give empty filler promises (e.g. "I'll keep them on my radar"). If an action or check was requested, execute it using tools!`
-    ];
-  }
-
-  return [
-    `You are the active orchestrator for "${REPO}" on "${NODE}" (turn agent: ${agent}).`,
-    `A HUMAN OPERATOR (${opName}) SENT THIS MESSAGE TO YOU FROM WHATSAPP:`,
-    `"""`,
-    userTexts,
-    `"""`,
-    '',
-    `CRITICAL INSTRUCTIONS FOR THIS TURN:`,
-    `1. TALK DIRECTLY TO THE OPERATOR (${opName}) in natural, professional language (first person: "I...", "You...").`,
-    ...directiveInstructions,
-    `4. NEVER speak about the operator in the third person.`,
-    `5. YOU ARE FULLY EMPOWERED TO USE TOOLS (Bash, Read, Glob, Grep) to inspect files, take snapshots, check logs, or dispatch tasks. Ground your responses in real live evidence.`,
-    `6. YOUR ENTIRE FINAL OUTPUT MUST BE ADDRESSED DIRECTLY TO THE OPERATOR ON WHATSAPP.`
-  ].join('\n');
-}
-
+const ctx = { cfg, st, save, sendImage };
+const control = () => readControl(cfg);
 let busy = false;
-let queue = [];
-let lastEvent = Date.now();
+const queue = [];        // system events waiting for the manager
+const ownerQueue = [];   // owner messages waiting for the manager
+const history = [];      // owner <-> side-responder conversation to hand to the manager
+const quotaBurst = [];
+const reporter = createReporter({ cfg, st, save, sendAuto, isIdle: () => !busy && /Running \(0\)/.test(digest(cfg)) });
 
-async function handle(events) {
+// Side responder: answers the owner at once while the manager is busy. Read-only (edit tools denied for every responder).
+async function respondWhileBusy(text) {
+  history.push(`owner: ${text}`);
+  const entry = candidates({ role: 'responder', st, hubDir: cfg.hubPath, control: control() })[0];
+  if (!entry) { sendReply('Got it. The manager is busy and no side helper is free; I will answer after its current step.'); return; }
+  const res = await runTurn({ ...entry, cost: 'plan' }, responderPrompt({ cfg, ownerText: text, history: history.slice(-6) }), { id: crypto.randomUUID() });
+  const fail = failureOf(res);
+  if (fail) { markDown(st, entry.id, fail.downMs, fail.reason); save(); sendReply('Got it. The manager is busy; I will answer after its current step.'); return; }
+  const reply = extractReply(res.stdout, entry.family) || 'Received. The manager will answer after its current step.';
+  history.push(`responder: ${reply}`);
+  sendReply(reply);
+  log(`responder ${entry.id} answered the owner while the manager was busy`);
+  const handoff = path.join(cfg.hubPath, 'runs', 'responder-handoff.md');
+  if (fs.existsSync(handoff) && fs.readFileSync(handoff, 'utf8').trim()) queue.push('OWNER-CHAT: the side responder left notes for you in runs/responder-handoff.md; act on them.');
+}
+
+// One manager turn. Tries the ranked managers in order; failovers are silent; an all-down outage is announced once.
+async function managerTurn({ events, owner }) {
   busy = true;
-  const userEvents = events.filter((e) => e.startsWith('whatsapp:') || e.startsWith('USER ('));
-  const hasUserMessage = userEvents.length > 0;
-  
-  let userTexts = '';
-  if (hasUserMessage) {
-    userTexts = userEvents
-      .map((e) => e.replace(/^(whatsapp:\s*(WHATSAPP\s*\d\d:\d\d:\s*)?|USER\s*\([^)]*\):\s*)/i, '').trim())
-      .filter(Boolean)
-      .join('\n');
-  }
-
-  const body = `EVENTS:\n${events.join('\n')}`;
-  let takeover = null;
   const failed = [];
-  
-  for (const agent of order().filter(healthy)) {
-    // 1. FAST PREFLIGHT PROBE: Check API health in <3.5s before launching CLI
-    const probe = await pingAgent(agent, 3500);
-    if (!probe.ok) {
-      const isQuota = probe.isQuota || QUOTA_LIMIT.test(probe.reason);
-      const cooldown = isQuota ? DOWN_MS : SHORT_DOWN_MS;
-      st.until[agent] = Date.now() + cooldown;
-      delete st.sessions[agent];
+  try {
+    for (const entry of candidates({ role: 'orchestrator', st, hubDir: cfg.hubPath, control: control() })) {
+      const sess = st.sessions[entry.id] ?? {};
+      const fresh = !sess.sid || shouldRotate({ currentTokens: sess.contextTokens ?? 0, turns: sess.turns ?? 0 }, o.rotate).shouldRotate;
+      const convo = history.splice(0);
+      const takeover = st.current && st.current !== entry.id ? st.current : null;
+      const prompt = fresh ? bootstrapPrompt({ cfg, entry, events, owner, conversation: convo, takeover }) : continuePrompt({ cfg, entry, events, owner, conversation: convo });
+      const newId = crypto.randomUUID();
+      log(`turn -> ${entry.id}${fresh ? ' (new session)' : ''}: ${events.length} event(s), ${owner.length} owner message(s)`);
+      const res = await runTurn(entry, prompt, fresh ? { id: newId } : { sid: sess.sid });
+      const fail = failureOf(res);
+      if (fail) {
+        markDown(st, entry.id, fail.downMs, fail.reason);
+        delete st.sessions[entry.id];
+        history.unshift(...convo);
+        save();
+        failed.push(`${entry.id}: ${fail.reason}`);
+        log(`${entry.id} unavailable (${fail.reason}) until ${new Date(st.down[entry.id]).toTimeString().slice(0, 5)}`);
+        continue;
+      }
+      const stats = turnStats(res.stdout, entry.family);
+      const sid = (fresh ? extractSessionId(res.stdout, entry.family) ?? newId : sess.sid);
+      st.sessions[entry.id] = { sid, turns: fresh ? 1 : (sess.turns ?? 0) + 1, contextTokens: stats.contextTokens, lastAt: Date.now() };
+      st.current = entry.id;
+      st.alertKey = null;
+      recordTurn(st, entry.id);
       save();
-
-      const tag = isQuota ? `${ICONS.stop} Quota Ended` : `${ICONS.warning} Responding Error`;
-      log(`[preflight] ${tag}: ${agent} (${probe.reason}) cooldown: ${cooldown / 60000}m. Fast failover.`);
-      failed.push(`${tag} \u{2022} *${agent.replace('@', ' \u{2022} ')}*: ${probe.reason} (until ${until(agent)})`);
-      takeover = agent;
-      continue;
-    }
-
-    const fresh = !st.sessions[agent];
-    const prompt = hasUserMessage
-      ? buildSteerPrompt(agent, userTexts)
-      : (fresh || takeover ? `${bootstrap(agent, takeover)}\n\n${body}` : `${body}\n\nHandle these per the playbook; update docs/HANDOFF.md before you finish.`);
-    log(`turn → ${agent}${fresh ? ' (new session)' : ''}: ${events.length} event(s)`);
-    
-    let r = await turn(agent, prompt, hasUserMessage);
-
-    if (r.preempted) {
-      log(`[handle] Turn preempted by incoming user directive. Yielding turn immediately.`);
-      const nonUserEvents = events.filter((e) => !e.startsWith('whatsapp:') && !e.startsWith('USER ('));
-      if (nonUserEvents.length) queue.push(...nonUserEvents);
-      busy = false;
-      setImmediate(flush);
+      appendLedgerRecord(cfg.hubPath, { entry: entry.id, session: sid, usage: stats.usage, cost: stats.costUsd ?? 0, contextTokens: stats.contextTokens, wake: owner.length ? 'owner' : 'system' });
+      const notice = ownerClaudeNotice(entry, st);
+      if (notice && !st.noticedOwnerClaude) { sendAuto(notice); st.noticedOwnerClaude = true; save(); }
+      if (entry.owner !== 'user') st.noticedOwnerClaude = false;
+      const reply = extractReply(res.stdout, entry.family);
+      if (reply && !/^NOOP\b/i.test(reply)) { (owner.length ? sendReply : sendAuto)(reply); reporter.track(reply); }
+      else if (owner.length) sendReply('Received. Nothing to change right now.');
       return;
     }
-
-    // Check if turn succeeded (exit code 0 and no error result payload)
-    let hasExplicitError = false;
-    if (r.code !== 0) {
-      hasExplicitError = true;
-    } else {
-      const lastLines = (r.out || '').trim().split('\n');
-      for (let i = lastLines.length - 1; i >= Math.max(0, lastLines.length - 20); i--) {
-        const l = lastLines[i].trim();
-        if (l.startsWith('{') && l.endsWith('}')) {
-          try {
-            const p = JSON.parse(l);
-            if (p.type === 'result' && p.is_error === true) { hasExplicitError = true; break; }
-            if (p.type === 'result' && p.subtype === 'error_exit') { hasExplicitError = true; break; }
-            if (p.type === 'error' && p.error) { hasExplicitError = true; break; }
-          } catch {}
-        }
-      }
-    }
-
-    const sid = sessionFrom(agent, r.out);
-    
-    if (!hasExplicitError) {
-      if (sid && !hasUserMessage) {
-        st.sessions[agent] = sid;
-        st.turnCount = st.turnCount || {};
-        st.turnCount[agent] = (st.turnCount[agent] || 0) + 1;
-        const turnTokens = extractTurnTokens(r.out);
-        const inputTokens = turnTokens?.input || 0;
-        const totalTokens = turnTokens?.total || 0;
-        
-        // Anti-hallucination auto-rotation:
-        // Reset session if token context is heavy (>= 75k input or >= 90k total) or every 4 turns
-        const isTokenHeavy = inputTokens >= 75_000 || totalTokens >= 90_000;
-        const isTurnLimit = st.turnCount[agent] >= 4;
-        
-        if (isTokenHeavy || isTurnLimit) {
-          const reason = isTokenHeavy 
-            ? `heavy tokens (${inputTokens.toLocaleString()} in / ${totalTokens.toLocaleString()} total)`
-            : `turn limit (${st.turnCount[agent]} turns reached)`;
-          log(`[driver] Auto-rotating session for ${agent} due to ${reason} to prevent hallucinations & bloat.`);
-          delete st.sessions[agent];
-          st.turnCount[agent] = 0;
-        }
-      }
-      st.current = agent;
-      save();
-      log(`turn ok (${agent})`);
-      if (failed.length) notify(`${ICONS.warning} Switched to *${agent.replace('@', ' \u{2022} ')}*\n${failed.join('\n')}`);
-      if (hasUserMessage) {
-        const reply = extractReply(r.out);
-        if (reply) {
-          log(`replying to user via WhatsApp (${reply.length} chars)`);
-          notify(reply);
-        } else {
-          log('turn completed with user message but extractReply was empty; sending fallback completion');
-          notify(`${ICONS.check} *Received:* "_${userTexts.slice(0, 40)}_" \u{2022} *Turn Completed*\nOrchestrator finished executing your directive.`);
-        }
-        const nonUserEvents = events.filter((e) => !e.startsWith('whatsapp:') && !e.startsWith('USER ('));
-        if (nonUserEvents.length) {
-          queue.push(...nonUserEvents);
-          setImmediate(flush);
-        }
-      }
-      st.pausedNote = null; save();
-      busy = false;
-      return;
-    }
-    
-    // Evaluate failure: genuine quota vs responding error
-    const isQuotaError = QUOTA_LIMIT.test(r.out);
-    const cooldown = downFor(r, isQuotaError);
-    st.until[agent] = Date.now() + cooldown;
-    delete st.sessions[agent];
-    save();
-
-    const shortReason = (r.out.match(QUOTA_LIMIT)?.[0] ?? `exit ${r.code}`).slice(0, 60);
-    const tag = isQuotaError ? `${ICONS.stop} Quota Limit` : `${ICONS.warning} Responding Error`;
-    failed.push(`${tag} \u{2022} *${agent.replace('@', ' \u{2022} ')}*: ${shortReason} (until ${until(agent)})`);
-    log(`${agent} unavailable (${shortReason}) until ${until(agent)}; next: ${order().filter(healthy)[0] ?? 'none'}`);
-    takeover = agent;
-  }
-  
-  if (failed.length) {
-    const next = Math.min(...order().map((e) => st.until[e] ?? Infinity));
-    const note = `${ICONS.pause} No agent available right now, I retry at ${new Date(next).toTimeString().slice(0, 5)}.\n${failed.join('\n')}`;
-    // Dedupe on WHICH agents are down, not on the retry time (that changes every round, so the
-    // old key never matched and the same pause note went out every ~15 minutes).
-    const key = order().filter((e) => !healthy(e)).sort().join('|');
-    if (st.pausedNote?.key !== key || Date.now() - st.pausedNote.at > 3 * 3600_000) {
-      notify(note); st.pausedNote = { key, at: Date.now() }; save();
-    }
-  }
-  busy = false;
-  queue.unshift(...events);
+    // Nobody could take the turn: keep the work, tell the owner once per distinct outage.
+    queue.unshift(...events);
+    ownerQueue.unshift(...owner);
+    const key = downKey(st);
+    if (owner.length) sendReply(outageMessage({ st, hubDir: cfg.hubPath }));
+    else if (st.alertKey !== key) { sendAuto(outageMessage({ st, hubDir: cfg.hubPath })); st.alertKey = key; save(); }
+    log(`no manager available (${failed.join('; ') || 'all marked down'})`);
+  } finally { busy = false; }
 }
 
-const flush = () => {
-  if (busy || control().paused || !queue.length) return;
-  const batch = queue;
-  queue = [];
-  handle(batch);
-};
+async function tick() {
+  if (busy) return;
+  const owner = ownerQueue.splice(0);
+  const events = control().paused ? [] : queue.splice(0);
+  if (!owner.length && !events.length) return;
+  if (!owner.length && turnsInLastHour(st) >= o.maxTurnsPerHour) { queue.unshift(...events); return; }   // budget: only owner messages bypass the cap
+  try { await managerTurn({ events, owner }); } catch (e) { busy = false; log(`turn error: ${e.message}`); }
+}
 
-const push = (line) => {
-  if (queue.length && queue[queue.length - 1] === line) return;
-  lastEvent = Date.now();
-  queue.push(line);
-  if ((line.startsWith('whatsapp:') || line.startsWith('USER (')) && !busy) {
-    setTimeout(flush, 100);
-  }
-};
+function onOwner(text) {
+  reporter.answered();
+  if (/^\/orch\b/i.test(text)) { runCommand(text, ctx).then(sendReply).catch((e) => sendReply(`Command failed: ${e.message}`)); return; }
+  if (busy) { respondWhileBusy(text).catch((e) => log(`responder error: ${e.message}`)); return; }
+  ownerQueue.push(text);
+  setImmediate(tick);
+}
 
-setInterval(() => {
-  if (busy || control().paused) return;
-  if (!queue.length && Date.now() - lastEvent > IDLE_MS) push(`TICK ${new Date().toISOString().slice(11, 16)}: no events for ${IDLE_MS / 60000} min; check the hub and keep lanes busy within quota. Do NOT send any tick message to WhatsApp.`);
-  flush();
-}, BATCH_MS);
+async function main() {
+  if (cmdOnce !== undefined) { console.log(await runCommand(cmdOnce, ctx)); return; }
+  if (sayOnce !== undefined) { toTerminal = true; await managerTurn({ events: [], owner: [sayOnce] }); return; }
 
-function follow(name, cmd, args, filter = () => true) {
-  const child = spawn(cmd, args, { cwd: ROOT, windowsHide: true });
-  let buf = '';
-  child.stdout.on('data', (d) => {
-    buf += d;
-    const lines = buf.split('\n'); buf = lines.pop();
-    for (const l of lines.map((x) => x.trim()).filter(Boolean)) if (filter(l)) push(`${name}: ${l}`);
+  const lock = path.join(cfg.hubPath, 'orch-driver.lock');
+  try {
+    const other = Number(fs.readFileSync(lock, 'utf8'));
+    if (other && other !== process.pid) { process.kill(other, 0); console.log(`another driver (pid ${other}) already runs ${cfg.projectName}; exiting`); process.exit(0); }
+  } catch { /* no lock, or the old owner is gone */ }
+  fs.writeFileSync(lock, String(process.pid));
+  const unlock = () => { try { if (fs.readFileSync(lock, 'utf8') === String(process.pid)) fs.unlinkSync(lock); } catch { /* already gone */ } };
+  process.on('exit', unlock);
+  for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => process.exit(0));
+
+  log(`driver up for ${cfg.projectName} on ${cfg.nodeName}`);
+  const intake = new EventIntake(cfg, { autoloop: !noAutoloop, whatsapp: !noWa }).start();
+  intake.on('wake', (ev) => {
+    if (ev.wakeClass === 'user') return onOwner(ownerText(ev.line));
+    if (ev.wakeClass === 'quota') {   // autoloop already moves work on a lane quota hit; wake only on a burst
+      quotaBurst.push(ev.at); while (quotaBurst.length && ev.at - quotaBurst[0] > 30 * 60_000) quotaBurst.shift();
+      if (quotaBurst.length >= 5) { quotaBurst.length = 0; queue.push('QUOTA burst: five lane quota failures in 30 minutes; check allowance and lanes.'); }
+      return;
+    }
+    if (['decide', 'sync', 'start'].includes(ev.wakeClass)) queue.push(ev.line);
   });
-  child.on('close', (code) => { log(`${name} stopped (${code}); restarting in 10s`); setTimeout(() => follow(name, cmd, args, filter), 10_000); });
+  setInterval(() => tick().catch((e) => log(`tick error: ${e.message}`)), 20_000);
+  setInterval(() => { try { reporter.tick(); } catch (e) { log(`report error: ${e.message}`); } }, 120_000);
+  if (turnsInLastHour(st) === 0) queue.push('START: the driver just started. Load context and report where things stand.');
 }
 
-if (cmdOnce) {
-  console.log(await orchCommand(cmdOnce));
-  process.exit(0);
-}
-if (sayOnce) {
-  await handle([`USER (terminal): ${sayOnce}`]);
-  process.exit(0);
-}
-log(`driver up for ${REPO} on ${NODE}; order: ${order().join(' → ')}`);
-if (withAutoloop) follow('autoloop', process.execPath, [path.join(HUB, 'autoloop.mjs')], (l) => {
-  if (/^DIGEST\b.*\|\s*running:\s*none$/i.test(l)) return false;
-  if (/^SYNC\b.*pulled 0/i.test(l)) return false;
-  return true;
-});
-
-// WhatsApp Listener: User messages have top priority and immediately steer or preempt the agent
-if (fs.existsSync(WA)) follow('whatsapp', process.execPath, [WA, 'inbox'], (l) => {
-  if (!l.startsWith('WHATSAPP')) return false;
-  
-  const m = l.match(/^WHATSAPP \d\d:\d\d:\s*.*?\b\/?orch\b\s*(.*)$/i) || l.match(/^WHATSAPP \d\d:\d\d:\s*\b(quotas|status)\b/i);
-  if (m) {
-    const cmdText = m[1] || m[0];
-    orchCommand(cmdText).then((reply) => {
-      log(`/orch ${cmdText} -> ${reply.split('\n')[0]}`);
-      notify(reply);
-    });
-    return false;
-  }
-
-  const textMatch = l.match(/^WHATSAPP \d\d:\d\d:\s*(.*)$/);
-  const rawMsg = textMatch ? textMatch[1] : l;
-  const voiceMatch = rawMsg.match(/\[voice note transcribed:\s*"([^"]+)"\]/);
-  const snippet = voiceMatch
-    ? (voiceMatch[1].slice(0, 65) + ' (🎙️ Voice Note)')
-    : rawMsg.trim().replace(/\s+/g, ' ').slice(0, 80);
-  const currentDuty = (order().find(healthy) ?? 'Gemini').replace('@', ' \u{2022} ');
-
-  if (currentTurn && !currentTurn.isUser) {
-    const runningAgent = currentTurn.agent.replace('@', ' \u{2022} ');
-    const runningElapsed = Math.round((Date.now() - currentTurn.startedAt) / 1000);
-    log(`[responder] Manager is busy (${currentTurn.agent}, ${runningElapsed}s elapsed). Never interrupting mid-turn. Routing message to side responder.`);
-
-    st.responderSession = st.responderSession || {};
-    runResponder(rawMsg, { root: ROOT, hubDir: HUB, session: st.responderSession })
-      .then(async (res) => {
-        const reply = extractReply(res.stdout || res.out || res.stdoutBuffer || '');
-        if (reply) {
-          log(`[responder] replying to user via WhatsApp (${reply.length} chars)`);
-          notify(reply);
-        } else {
-          log(`[responder] completed but reply was empty`);
-        }
-      })
-      .catch((err) => {
-        log(`[responder] error: ${err.message}`);
-      });
-
-    const ack = [
-      `*${ICONS.eye} Message Received (Responder Active)*`,
-      `${ICONS.bullet} *Instruction:* "_${snippet}${snippet.length >= 80 ? '...' : ''}_"`,
-      `${ICONS.bullet} *Coordinator:* ${currentDuty}`,
-      `${ICONS.bullet} *Status:* Manager is busy on a background turn; side responder is answering your question without interrupting the manager.`
-    ].join('\n');
-
-    log(`Responder ACK sent to WhatsApp: "${snippet.slice(0, 30)}..."`);
-    notify(ack);
-
-    lastEvent = Date.now();
-    return false;
-  }
-
-  let preemptionOccurred = false;
-  let runningAgent = '';
-  let runningElapsed = 0;
-
-  let ack = '';
-  if (currentTurn && currentTurn.isUser) {
-    ack = [
-      `*${ICONS.eye} Message Received*`,
-      `${ICONS.bullet} *Instruction:* "_${snippet}${snippet.length >= 80 ? '...' : ''}_"`,
-      `${ICONS.bullet} *Coordinator:* ${currentDuty}`,
-      `${ICONS.bullet} *Status:* ${ICONS.hourglass} User turn currently active; your instruction is queued as top priority!`
-    ].join('\n');
-  } else {
-    ack = [
-      `*${ICONS.eye} Message Received*`,
-      `${ICONS.bullet} *Instruction:* "_${snippet}${snippet.length >= 80 ? '...' : ''}_"`,
-      `${ICONS.bullet} *Coordinator:* ${currentDuty}`,
-      `${ICONS.bullet} *Status:* ${ICONS.lightning} Active. Orchestrator processing your directive now...`
-    ].join('\n');
-  }
-
-  log(`ACK sent to WhatsApp: "${snippet.slice(0, 30)}..."`);
-  notify(ack);
-
-  lastEvent = Date.now();
-  queue.unshift(`whatsapp: ${l}`);
-  
-  setImmediate(flush);
-  setTimeout(flush, 400);
-
-  return false;
-});
-
-push('START: the driver just started. Load context and continue work from the hub. Do NOT send any startup message to WhatsApp.');
-
-const REPORTER = path.join(os.homedir(), '.local', 'bin', 'orch-report-15m.mjs');
-if (fs.existsSync(REPORTER)) {
-  setInterval(() => {
-    try {
-      spawn(process.execPath, [REPORTER, ROOT], { stdio: 'ignore', windowsHide: true, detached: true });
-    } catch {}
-  }, 15 * 60_000);
-}
+main().catch((e) => { console.error(e); process.exit(1); });

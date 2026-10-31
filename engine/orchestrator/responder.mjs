@@ -148,7 +148,7 @@ export async function performHandover(session = {}, options = {}) {
   const transcript = session.transcript || [];
   const transcriptStr = transcript.map(m => `[${m.role || 'user'}] ${m.text || ''}`).join('\n');
 
-  const handoffFile = path.join(hubDir, 'runs', 'responder-handoff.md');
+  const handoffFile = path.join(hubDir, 'runs', 'responder-handoff.md');   // the hub's own events.jsonl is never written here
   let handoffContent = '';
   try {
     if (fs.existsSync(handoffFile)) {
@@ -158,7 +158,7 @@ export async function performHandover(session = {}, options = {}) {
 
   const managerPrompt = `--- HANDOVER FROM SIDE RESPONDER ---\nTranscript:\n${transcriptStr}\n\nHandoff notes:\n${handoffContent}\n-----------------------------------`;
 
-  const eventsFile = path.join(hubDir, 'events.jsonl');
+  const eventsFile = path.join(hubDir, 'runs', 'responder-events.jsonl');
   try {
     if (fs.existsSync(path.dirname(eventsFile))) {
       const eventRecord = JSON.stringify({

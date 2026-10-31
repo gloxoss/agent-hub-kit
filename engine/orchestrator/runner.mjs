@@ -8,6 +8,7 @@ import readline from 'node:readline';
 import { resolveConfig } from './config.mjs';
 import { parseTelemetryEvent } from './telemetry.mjs';
 import { isOrchestratorWrite } from './guard.mjs';
+import { isCheap } from '../accounts.mjs';
 import { loadState, saveState } from './state.mjs';
 
 const SECRET_READ_DENIALS = [
@@ -28,7 +29,7 @@ const COSTLY_TOOL_DENIALS = [
 ];
 
 export function buildClaudeCommand(entry, prompt, session = {}) {
-  const bin = entry.buildCmd || entry.name || 'claude';
+  const bin = entry.command || entry.buildCmd || entry.name || 'claude';
   const args = [];
 
   const sid = session.sid || session.sessionId;
@@ -47,13 +48,12 @@ export function buildClaudeCommand(entry, prompt, session = {}) {
   const model = entry.model || (bin.includes('gemini') ? 'gemini-3-flash' : 'sonnet');
   args.push('--model', model);
 
-  if (entry.strictMcpConfig || entry.name?.includes('gemini')) {
+  if (entry.strictMcpConfig || String(entry.id ?? entry.model ?? '').includes('gemini')) {
     args.push('--strict-mcp-config');
   }
 
-  const isCheap = entry.cost === 'free' || entry.tier >= 3;
   const denials = [...SECRET_READ_DENIALS];
-  if (!isCheap) {
+  if (!isCheap(entry)) {
     denials.push(...COSTLY_TOOL_DENIALS);
   }
 
@@ -65,13 +65,15 @@ export function buildClaudeCommand(entry, prompt, session = {}) {
 }
 
 export function buildCodexCommand(entry, prompt, session = {}) {
-  const bin = entry.buildCmd || 'codex';
+  const bin = entry.command || entry.buildCmd || 'codex';
   const args = [];
   const sid = session.sid || session.sessionId;
   const cfg = resolveConfig();
 
   if (sid) {
-    args.push('exec', 'resume', sid, '-c', 'sandbox_mode="workspace-write"');
+    args.push('exec', 'resume', '--json', '--skip-git-repo-check', '-c', 'sandbox_mode="workspace-write"', '-c', 'sandbox_workspace_write.network_access=true');
+    if (entry.model) args.push('-m', entry.model);
+    args.push(sid);
   } else {
     args.push('exec', '--json', '--skip-git-repo-check', '--sandbox', 'workspace-write', '-c', 'sandbox_workspace_write.network_access=true');
     if (entry.model) {
@@ -85,7 +87,7 @@ export function buildCodexCommand(entry, prompt, session = {}) {
 }
 
 export function buildOpenCodeCommand(entry, prompt, session = {}) {
-  const bin = entry.buildCmd || 'opencode';
+  const bin = entry.command || entry.buildCmd || 'opencode';
   const args = ['run', '--format', 'json'];
 
   const model = entry.model || 'opencode/deepseek-v4.1-flash-free';
@@ -141,7 +143,7 @@ export async function runTurn(entry, prompt, session = {}) {
   const claudeLaunchers = path.join(home, '.claude-launchers');
   const localBin = path.join(home, '.local', 'bin');
   const currentPath = process.env.PATH || '';
-  const extendedPath = `${claudeLaunchers}:${localBin}:${currentPath}`;
+  const extendedPath = [claudeLaunchers, localBin, currentPath].join(path.delimiter);
 
   const turnMinutes = cfg.orchestrator?.turnMinutes || 20;
   const silenceMinutes = cfg.orchestrator?.silenceMinutes || 5;
@@ -246,7 +248,7 @@ export async function runTurn(entry, prompt, session = {}) {
         obj = JSON.parse(trimmed);
       } catch {}
 
-      const isCostly = !(entry.cost === 'free' || entry.tier >= 3);
+      const isCostly = !isCheap(entry);
       if (isCostly) {
         let checkTarget = obj || trimmed;
         if (obj) {

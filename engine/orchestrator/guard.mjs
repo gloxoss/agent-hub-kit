@@ -163,19 +163,22 @@ function isOutsideAllowedPaths(filePath, options = {}) {
     resolved = path.resolve(filePath);
   }
 
-  const normalized = resolved.toLowerCase();
-  const homeLower = home.toLowerCase();
+  // Compare with forward slashes and lower case so the same rules hold on Linux and Windows.
+  const norm = (p) => p.replace(/\\/g, '/').toLowerCase();
+  const normalized = norm(resolved);
+  const homeLower = norm(home);
 
-  const hubPath = options.hub ? path.resolve(options.hub).toLowerCase() : null;
-  if (hubPath && normalized.startsWith(hubPath)) return false;
-  if (normalized.includes('.hub') || normalized.includes('.agent-hub')) return false;
+  const hubPath = options.hub ? norm(path.resolve(options.hub)) : null;
+  if (hubPath && (normalized === hubPath || normalized.startsWith(hubPath + '/'))) return false;
+  if (/\/\.(hub|agent-hub[\w-]*)(\/|$)/.test(normalized)) return false;
 
   if (normalized.includes('/docs/') || normalized.endsWith('/docs')) return false;
 
-  const devboxBrain = path.join(homeLower, '.devbox-brain');
-  if (normalized.startsWith(devboxBrain)) return false;
+  const devboxBrain = `${homeLower}/.devbox-brain`;
+  if (normalized === devboxBrain || normalized.startsWith(devboxBrain + '/')) return false;
 
-  if (normalized.startsWith('/tmp/')) return false;
+  const tmp = norm(os.tmpdir());
+  if (normalized.startsWith('/tmp/') || /^[a-z]:\/tmp\//.test(normalized) || normalized.startsWith(tmp + '/')) return false;
 
   return true;
 }
@@ -188,7 +191,7 @@ export function runFixtureTest() {
     { cmd: 'cp file.txt /tmp/backup.txt', expected: false },
     { cmd: 'mkdir -p ~/.devbox-brain/logs', expected: false },
     { cmd: 'node hub.mjs status', expected: false },
-    { cmd: 'sed -i "s/a/b/" lango-app/x', expected: true },
+    { cmd: 'sed -i "s/a/b/" app/x', expected: true },
     { cmd: 'cat > src/a.ts', expected: true },
     { cmd: 'git commit -am "fix"', expected: true },
     { cmd: 'cat .env', expected: true }

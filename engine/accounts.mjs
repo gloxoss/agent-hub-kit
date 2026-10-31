@@ -24,8 +24,9 @@ export function validateAccountEntry(entry) {
   if (!Array.isArray(entry.roles)) {
     throw new Error(`Account [${id}] missing required array field 'roles'`);
   }
-  if (typeof entry.cost !== 'number' || Number.isNaN(entry.cost)) {
-    throw new Error(`Account [${id}] missing required number field 'cost'`);
+  const costOk = (typeof entry.cost === 'number' && !Number.isNaN(entry.cost)) || ['free', 'plan', 'paid'].includes(entry.cost);
+  if (!costOk) {
+    throw new Error(`Account [${id}] field 'cost' must be a number or one of free|plan|paid`);
   }
   if (!entry.owner || typeof entry.owner !== 'string') {
     throw new Error(`Account [${id}] missing required string field 'owner'`);
@@ -42,7 +43,65 @@ export function validateAccountEntry(entry) {
   return true;
 }
 
-export function loadAccounts(hubDir = '.agent-hub') {
+// Role vocabulary: plan roles are orchestrator|builder|reviewer|responder; older registries said worker|verifier.
+const ROLE_ALIASES = { worker: 'builder', verifier: 'reviewer' };
+export function rolesOf(entry) {
+  const out = new Set();
+  for (const r of entry.roles ?? []) { out.add(r); if (ROLE_ALIASES[r]) out.add(ROLE_ALIASES[r]); }
+  return out;
+}
+// Cheap = free (cost "free" or 0): may edit when managing. Plan/paid accounts are "costly": they never write code.
+export function isCheap(entry) { return entry.cost === 'free' || entry.cost === 0; }
+export function costRank(entry) {
+  if (isCheap(entry)) return 0;
+  if (entry.cost === 'paid' || (typeof entry.cost === 'number' && entry.cost >= 0.1)) return 2;
+  return 1;
+}
+
+// The hub folder of the project in the current directory (.hub first), so callers need not pass it.
+export function resolveHubDir(startDir = process.cwd()) {
+  for (const d of ['.hub', '.agent-hub-orch', '.agent-hub']) {
+    const p = path.resolve(startDir, d);
+    if (fs.existsSync(p)) return p;
+  }
+  return path.resolve(startDir, '.hub');
+}
+
+// quota.mjs needs the CLIProxyAPI management key; read it from the vault env without printing it.
+function loadVaultEnv() {
+  if (process.env.CLIPROXY_KEY) return;
+  const f = path.join(os.homedir(), '.config', 'devbox', 'vault', 'env');
+  try {
+    for (const line of fs.readFileSync(f, 'utf8').split(/\r?\n/)) {
+      const m = line.match(/^(CLIPROXY_KEY|CLIPROXY_URL|CLIPROXY_DIR)=(.*)$/);
+      if (m && !process.env[m[1]]) process.env[m[1]] = m[2].replace(/^["']|["']$/g, '');
+    }
+  } catch { /* no vault here */ }
+}
+
+// Allowance for one registry entry out of the quota rows. Pools (several accounts behind one key) report their BEST
+// usable account. "quotaModel" picks one model's number (Antigravity rows hold Gemini and Claude pools separately,
+// and a row's overall "remaining" is the lowest of them, so it would hide a healthy Gemini pool).
+function quotaFor(entry, rows) {
+  if (!Array.isArray(rows) || !entry.quotaKey) return null;
+  const key = String(entry.quotaKey).toLowerCase();
+  const matched = rows.filter((r) => String(r.provider ?? '').toLowerCase() === key || String(r.account ?? '').toLowerCase().includes(key));
+  if (!matched.length) return null;
+  const rem = (r) => {
+    if (entry.quotaModel && r.models && r.models[entry.quotaModel] !== undefined) return Number(r.models[entry.quotaModel]);
+    return r.remaining === null || r.remaining === undefined ? 1 : Number(r.remaining);
+  };
+  const blocked = (r) => (entry.quotaModel ? ['AUTH', 'DOWN', 'OFF'] : ['AUTH', 'OUT', 'DOWN', 'OFF', 'COOLDOWN']).includes(r.flag);
+  const usable = matched.filter((r) => !blocked(r) && rem(r) >= 0.05);
+  if (usable.length) {
+    const best = Math.max(...usable.map(rem));
+    return { remaining: best, resetAt: null, flag: 'OK', detail: `${usable.length}/${matched.length} accounts usable, best ${best.toFixed(2)}` };
+  }
+  const resets = matched.map((r) => r.resetAt).filter(Boolean).sort();
+  return { remaining: Math.max(0, ...matched.map(rem)), resetAt: resets[0] ?? null, flag: 'OUT', detail: `all ${matched.length} accounts exhausted` };
+}
+
+export function loadAccounts(hubDir = resolveHubDir()) {
   let filePath = path.resolve(hubDir, 'accounts.json');
   if (!fs.existsSync(filePath)) {
     filePath = path.join(os.homedir(), '.config', 'agent-hub', 'accounts.json');
@@ -69,7 +128,8 @@ export function loadAccounts(hubDir = '.agent-hub') {
   return validated;
 }
 
-export function pick({ role, exclude = [], hubDir = '.agent-hub' } = {}) {
+export function pick({ role, exclude = [], hubDir = resolveHubDir() } = {}) {
+  loadVaultEnv();
   const accounts = loadAccounts(hubDir);
   const runsDir = path.resolve(hubDir, 'runs');
   const cachePath = path.join(runsDir, 'quota-cache.json');
@@ -110,36 +170,14 @@ export function pick({ role, exclude = [], hubDir = '.agent-hub' } = {}) {
 
   const filtered = accounts.filter(entry => {
     if (!entry.enabled) return false;
-    if (role && (!Array.isArray(entry.roles) || !entry.roles.includes(role))) return false;
+    if (role && !rolesOf(entry).has(role)) return false;
     if (excludeIds.has(entry.id)) return false;
     if (excludeObjs.has(entry)) return false;
     return true;
   });
 
   const enriched = filtered.map(entry => {
-    let q = null;
-    if (Array.isArray(quotaCache)) {
-      q = quotaCache.find(item =>
-        item.account === entry.quotaKey ||
-        item.account === entry.id ||
-        item.provider === entry.quotaKey ||
-        item.provider === entry.id ||
-        (item.account && entry.quotaKey && item.account.includes(entry.quotaKey)) ||
-        (item.account && entry.id && item.account.includes(entry.id))
-      );
-      if (!q) {
-        const parts = entry.id.split('-');
-        const num = parseInt(parts[parts.length - 1], 10);
-        if (!isNaN(num)) {
-          const familyMap = { gemini: 'antigravity', codex: 'codex', claude: 'claude', opencode: 'opencode', cursor: 'cursor' };
-          const providerTarget = familyMap[entry.family] ?? entry.family;
-          const familyItems = quotaCache.filter(item => item.provider === providerTarget || item.account?.startsWith(providerTarget));
-          if (familyItems[num - 1]) {
-            q = familyItems[num - 1];
-          }
-        }
-      }
-    }
+    const q = quotaFor(entry, quotaCache);
 
     let remaining = 1;
     let resetAt = null;
@@ -168,7 +206,7 @@ export function pick({ role, exclude = [], hubDir = '.agent-hub' } = {}) {
       remaining,
       resetAt,
       flag,
-      reason
+      reason: q?.detail ?? reason
     };
   });
 
@@ -191,6 +229,8 @@ export function pick({ role, exclude = [], hubDir = '.agent-hub' } = {}) {
     const aExh = isExhausted(a) ? 1 : 0;
     const bExh = isExhausted(b) ? 1 : 0;
     if (aExh !== bExh) return aExh - bExh;
+
+    if (costRank(a) !== costRank(b)) return costRank(a) - costRank(b);
 
     const remDiff = (b.remaining ?? 1) - (a.remaining ?? 1);
     if (Math.abs(remDiff) > 0.001) return remDiff;
@@ -323,10 +363,10 @@ if (process.argv[1] && __filename === fs.realpathSync(process.argv[1])) {
     if (roleIdx !== -1 && args[roleIdx + 1]) {
       role = args[roleIdx + 1];
     }
-    let hubDir = '.agent-hub';
-    const hubIdx = args.indexOf('--hubDir');
+    let hubDir = resolveHubDir();
+    const hubIdx = Math.max(args.indexOf('--hubDir'), args.indexOf('--hub'));
     if (hubIdx !== -1 && args[hubIdx + 1]) {
-      hubDir = args[hubIdx + 1];
+      hubDir = path.resolve(args[hubIdx + 1]);
     }
     const asJson = args.includes('--json');
 
