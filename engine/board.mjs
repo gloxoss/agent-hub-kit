@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { fold } from './fold.mjs';
 
 const HUB = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'));
 const NODE = (process.env.DEVBOX_NODE || os.hostname()).toLowerCase();
@@ -29,35 +30,26 @@ const gh = (args, input) => execFileSync('gh', args, { encoding: 'utf8', input, 
 const git = (args) => { try { return execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }).trim(); } catch { return ''; } };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// Same fold as hub.mjs, reduced to what the board shows.
+// Same fold as hub.mjs, using shared fold from fold.mjs.
 function localTasks() {
   const file = path.join(HUB, 'events.jsonl');
   const tasks = {};
   if (!fs.existsSync(file)) return tasks;
-  for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
-    if (!line.trim()) continue;
-    let e; try { e = JSON.parse(line); } catch { continue; }
-    const t = tasks[e.id];
-    switch (e.type) {
-      case 'task-add': tasks[e.id] = { id: e.id, phase: e.phase, title: e.title, scope: e.scope ?? [], deps: e.deps ?? [], status: 'OPEN', history: [] }; break;
-      case 'assign': if (t && ['OPEN', 'REWORK'].includes(t.status)) t.status = 'ASSIGNED'; break;
-      case 'claim': if (t) Object.assign(t, { status: 'CLAIMED', by: e.agent }); break;
-      case 'block': if (t) Object.assign(t, { status: 'BLOCKED', note: e.note }); break;
-      case 'release': if (t) t.status = 'OPEN'; break;
-      case 'done': if (t) Object.assign(t, { status: 'REVIEW', summary: e.summary, doneBy: e.agent }); break;
-      case 'verify': if (t) Object.assign(t, { status: e.ok ? 'VERIFIED' : 'REWORK', verifyNote: e.note }); break;
-      case 'accept': if (t) Object.assign(t, { status: 'ACCEPTED', acceptedAt: e.t }); break;
-      case 'reject': if (t) Object.assign(t, { status: 'REWORK', note: e.note }); break;
-      case 'edit': if (t) for (const k of ['title', 'scope', 'deps']) if (e[k] !== undefined) t[k] = e[k]; break;
-      case 'cancel': if (t) t.status = 'CANCELLED'; break;
-    }
-    const cur = tasks[e.id];
-    if (cur && e.type !== 'task-add') cur.history.push(`${e.t.slice(5, 16)} ${e.type} ${e.agent ?? ''}${e.node ? ` @${e.node}` : ''}`.trim());
-    // The machine of a task's latest event owns its board row; old events have no machine field
-    // and count as this machine's only with --adopt (run once on the machine whose log is live).
-    if (cur) cur.node = e.node ?? (adopt ? NODE : cur.node);
+  const events = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+  const { tasks: tmap } = fold(events);
+  for (const t of Object.values(tmap)) {
+    t.history = [];
+    t.node = undefined;
   }
-  return tasks;
+  for (const e of events) {
+    const t = tmap[e.id];
+    if (!t) continue;
+    if (e.type !== 'task-add') {
+      t.history.push(`${e.t.slice(5, 16)} ${e.type} ${e.agent ?? ''}${e.node ? ` @${e.node}` : ''}`.trim());
+    }
+    t.node = e.node ?? (adopt ? NODE : t.node);
+  }
+  return tmap;
 }
 
 // Accepted work counts as pushed once a commit naming the task is on the remote branch (anyone can pull it).
@@ -143,6 +135,116 @@ function ownerOf(num) {
   return owner;
 }
 
+let areasIssueCache;
+function ensureAreasIssue() {
+  if (areasIssueCache) return areasIssueCache;
+  const list = JSON.parse(gh(['issue', 'list', '--label', 'board', '--state', 'all', '--limit', '1000', '--json', 'number,title,state,labels,body']));
+  let found = list.find((i) => i.title === '[areas]');
+  if (!found) {
+    if (dry) {
+      return { number: 0, title: '[areas]', labels: [] };
+    }
+    ensureLabel('board');
+    ensureLabel('areas');
+    const title = '[areas]';
+    const body = 'Project area claims for multi-machine coordination.';
+    const url = gh(['issue', 'create', '--title', title, '--body-file', '-', '--label', 'board', '--label', 'areas'], body).trim();
+    const numMatch = url.match(/\/issues\/(\d+)$/);
+    if (numMatch) {
+      const num = numMatch[1];
+      try {
+        const repo = gh(['repo', 'view', '--json', 'nameWithOwner', '-q', '.nameWithOwner']).trim();
+        gh(['api', '-X', 'POST', `repos/${repo}/issues/${num}/pin`]);
+      } catch {}
+    }
+    const list2 = JSON.parse(gh(['issue', 'list', '--label', 'board', '--state', 'all', '--limit', '1000', '--json', 'number,title,state,labels,body']));
+    found = list2.find((i) => i.title === '[areas]');
+  }
+  areasIssueCache = found;
+  return found || { number: 0, title: '[areas]', labels: [] };
+}
+
+const AREAS_CACHE_FILE = path.join(HUB, 'areas-cache.json');
+function loadAreasCache() {
+  try {
+    if (fs.existsSync(AREAS_CACHE_FILE)) {
+      const data = JSON.parse(fs.readFileSync(AREAS_CACHE_FILE, 'utf8'));
+      if (Date.now() - data.timestamp < 120000) {
+        return data.areas;
+      }
+    }
+  } catch {}
+  return null;
+}
+function saveAreasCache(areas) {
+  try {
+    const arr = Array.from(areas.values()).map(({ prefix, node, since }) => ({ prefix, node, since }));
+    fs.writeFileSync(AREAS_CACHE_FILE, JSON.stringify({ timestamp: Date.now(), areas: arr }, null, 2));
+  } catch {}
+}
+
+function fetchAreasState(issueNum) {
+  const cached = loadAreasCache();
+  if (cached) {
+    const map = new Map();
+    for (const item of cached) {
+      map.set(item.prefix, { prefix: item.prefix, node: item.node, since: item.since });
+    }
+    return map;
+  }
+  if (!issueNum) return new Map();
+  const list = comments(issueNum);
+  const map = new Map(); // prefix -> { prefix, node, since }
+  for (const c of list) {
+    const body = c.body.trim();
+    const claimMatch = body.match(/^CLAIM-AREA\b/i);
+    if (claimMatch) {
+      const nodeMatch = body.match(/\bnode=(\S+)/i);
+      const areaMatch = body.match(/\barea=(\S+)/i);
+      if (nodeMatch && areaMatch) {
+        const node = nodeMatch[1].toLowerCase();
+        const prefix = areaMatch[1];
+        if (!map.has(prefix)) {
+          map.set(prefix, { prefix, node, since: c.created_at });
+        }
+      }
+    }
+    const releaseMatch = body.match(/^RELEASE-AREA\b/i);
+    if (releaseMatch) {
+      const areaMatch = body.match(/\barea=(\S+)/i);
+      const nodeMatch = body.match(/\bnode=(\S+)/i) || { 1: c.user?.login?.toLowerCase() };
+      const releasingNode = nodeMatch[1]?.toLowerCase();
+      if (areaMatch) {
+        const prefix = areaMatch[1];
+        const current = map.get(prefix);
+        if (current && (!releasingNode || current.node === releasingNode)) {
+          map.delete(prefix);
+        }
+      } else {
+        if (releasingNode) {
+          for (const [prefix, info] of map.entries()) {
+            if (info.node === releasingNode) {
+              map.delete(prefix);
+            }
+          }
+        }
+      }
+    }
+  }
+  saveAreasCache(map);
+  return map;
+}
+
+function ownerOfArea(issueNum, prefix) {
+  const areas = fetchAreasState(issueNum);
+  return areas.get(prefix)?.node || null;
+}
+
+function areaSlug(prefix) {
+  const slug = prefix.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+  return `area:${slug || 'root'}`;
+}
+
 switch (cmd) {
   case 'sync': {
     // Only rows this machine is live for: another machine's copy of the log may be stale.
@@ -191,7 +293,81 @@ switch (cmd) {
     }
     break;
   }
+  case 'area': {
+    const sub = id; // 'claim', 'release', 'list'
+    const prefix = rest.find((arg) => !arg.startsWith('--'));
+    const jsonFlag = process.argv.includes('--json') || rest.includes('--json');
+
+    if (sub === 'list') {
+      const issue = ensureAreasIssue();
+      const areas = fetchAreasState(issue.number);
+      const arr = Array.from(areas.values()).map(({ prefix, node, since }) => ({ prefix, node, since }));
+      if (jsonFlag) {
+        console.log(JSON.stringify(arr, null, 2));
+      } else {
+        if (arr.length === 0) {
+          console.log('No areas currently claimed.');
+        } else {
+          console.log('Node'.padEnd(16) + 'Since'.padEnd(26) + 'Prefix');
+          for (const a of arr) {
+            console.log(a.node.padEnd(16) + (a.since || '-').padEnd(26) + a.prefix);
+          }
+        }
+      }
+      break;
+    }
+
+    if (!prefix) {
+      console.error('error: path-prefix required for area claim/release');
+      process.exit(1);
+    }
+
+    const issue = ensureAreasIssue();
+    if (sub === 'claim') {
+      const before = ownerOfArea(issue.number, prefix);
+      if (before && before !== NODE) {
+        console.log(`${prefix} is owned by ${before}`);
+        process.exit(3);
+      }
+      if (!before) {
+        if (!dry && issue.number) {
+          gh(['issue', 'comment', String(issue.number), '--body', `CLAIM-AREA node=${NODE} area=${prefix} at ${new Date().toISOString()}`]);
+          await sleep(4000);
+          if (fs.existsSync(AREAS_CACHE_FILE)) fs.unlinkSync(AREAS_CACHE_FILE);
+        }
+      }
+      const owner = ownerOfArea(issue.number, prefix);
+      if (owner !== NODE && !dry) {
+        console.log(`${prefix} was claimed first by ${owner}`);
+        process.exit(3);
+      }
+      const slugLabel = areaSlug(prefix);
+      if (!dry && issue.number) {
+        ensureLabel(slugLabel);
+        ensureLabel(`node:${NODE}`);
+        gh(['issue', 'edit', String(issue.number), '--add-label', slugLabel, '--add-label', `node:${NODE}`]);
+      }
+      console.log(`${prefix} claimed by ${NODE}`);
+      break;
+    }
+
+    if (sub === 'release') {
+      if (!dry && issue.number) {
+        const owner = ownerOfArea(issue.number, prefix);
+        if (owner) {
+          gh(['issue', 'comment', String(issue.number), '--body', `RELEASE-AREA area=${prefix} node=${NODE}`]);
+          await sleep(2000);
+          if (fs.existsSync(AREAS_CACHE_FILE)) fs.unlinkSync(AREAS_CACHE_FILE);
+        }
+      }
+      console.log(`${prefix} released by ${NODE}`);
+      break;
+    }
+
+    console.log('usage: board.mjs area claim <prefix> | release <prefix> | list [--json]');
+    break;
+  }
   default:
-    console.log('usage: board.mjs sync [--dry] | claim <task> | release <task> | note <task> "text" | status');
+    console.log('usage: board.mjs sync [--dry] | claim <task> | release <task> | note <task> "text" | status | area claim <prefix> | area release <prefix> | area list [--json]');
     if (!CFG.board?.enabled) console.log('(board is off for this hub: set "board": {"enabled": true} in config.json)');
 }

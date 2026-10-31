@@ -36,6 +36,12 @@
     "pageReports": "docs/audit/pages",
     "plans": "docs/plans"
   },
+  "migrationPaths": [
+    "drizzle/",
+    "migrations/",
+    "prisma/migrations/",
+    "db/migrations/"
+  ],
   "pages": {
     "appRoot": ".",
     "routesDir": "src/app",
@@ -55,5 +61,10 @@
   "sync": {
     "minutes": 5,
     "enabled": false
+  },
+  "worktrees": {
+    "enabled": false,
+    "base": "../{repo}-wt",
+    "install": "auto"
   }
 }

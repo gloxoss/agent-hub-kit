@@ -1,2 +1,19 @@
 node_modules/
 *.log
+
+# Hub state created by running or testing the engine; never commit it
+.agent-hub/
+.hub/
+/events.jsonl
+/runs/
+/BOARD.md
+/autoloop-state.json
+/areas-cache.json
+/orch-driver.json
+/orch-control.json
+engine/BOARD.md
+engine/events.jsonl
+engine/runs/
+engine/autoloop-state.json
+engine/areas-cache.json
+*.prev

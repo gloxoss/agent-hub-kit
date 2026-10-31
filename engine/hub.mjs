@@ -1,15 +1,24 @@
 #!/usr/bin/env node
 // Agent hub. Orchestrator plans, assigns and accepts; workers claim, build and report;
 // a verifier who is not the worker checks the result. State is an append-only event log.
-// Usage: node .agent-hub/hub.mjs <command> [args]   (run from the repo root, Node 20+)
+// Usage: node .agent-hub-orch/hub.mjs <command> [args]   (run from the repo root, Node 20+)
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 
-const HUB = path.dirname(fileURLToPath(import.meta.url));
-const ROOT = path.dirname(HUB);
-const HUB_NAME = path.basename(HUB);
+const HUB = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'));
+let ROOT = process.env.HUB_ROOT;
+if (!ROOT) {
+  try {
+    const res = spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: HUB, encoding: 'utf8' });
+    if (res.status === 0 && res.stdout.trim()) {
+      ROOT = path.dirname(res.stdout.trim());
+    }
+  } catch {}
+}
+if (!ROOT) {
+  ROOT = path.dirname(HUB);
+}
 const EVENTS = path.join(HUB, 'events.jsonl');
 const BOARD = path.join(HUB, 'BOARD.md');
 const CHANGELOG = path.join(HUB, 'CHANGELOG.md');
@@ -47,11 +56,8 @@ function readEvents() {
   if (!fs.existsSync(EVENTS)) return [];
   return fs.readFileSync(EVENTS, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
 }
-// Every event names the machine that wrote it, so the shared board (board.mjs) knows which
-// machine's log is the live one for each task when several machines work on one repo.
-const NODE = (process.env.DEVBOX_NODE || os.hostname()).toLowerCase();
 function emit(type, data) {
-  const ev = { t: now(), type, agent: me ?? null, node: NODE, ...data };
+  const ev = { t: now(), type, agent: me ?? null, ...data };
   fs.appendFileSync(EVENTS, JSON.stringify(ev) + '\n');
   return ev;
 }
@@ -187,7 +193,7 @@ Worker
   done TASK --summary S --files a,b --verify "cmd -> result"
 Verifier (never the agent who did the task)
   verify TASK --ok|--fail --note N [--report path]
-Task ids look like L-site, A-site-page, B-section-name. Briefs: ${HUB_NAME}/tasks/<TASK>.md
+Task ids look like L-site, A-site-page, B-section-name. Briefs: .agent-hub-orch/tasks/<TASK>.md
 Exit codes: 0 ok, 1 usage or rule error, 3 conflict (file or task held by someone else)`);
   },
 
@@ -202,7 +208,7 @@ Exit codes: 0 ok, 1 usage or rule error, 3 conflict (file or task held by someon
       if (other) fail(`${other.id} is already the orchestrator`, 3);
     }
     emit('join', { role, tool: opt.tool ?? 'other', note: opt.note });
-    console.log(`joined as ${me} (${role}). Read ${HUB_NAME}/PROTOCOL.md, then: status, inbox, ${role === 'worker' ? 'next' : role === 'verifier' ? 'status (REVIEW tasks)' : 'add / assign'}`);
+    console.log(`joined as ${me} (${role}). Read .agent-hub-orch/PROTOCOL.md, then: status, inbox, ${role === 'worker' ? 'next' : role === 'verifier' ? 'status (REVIEW tasks)' : 'add / assign'}`);
   },
 
   add() {
@@ -241,7 +247,7 @@ Exit codes: 0 ok, 1 usage or rule error, 3 conflict (file or task held by someon
     const toVerify = s.agents[me].role === 'verifier' ? Object.values(s.tasks).filter((t) => t.status === 'REVIEW' && needsVerify(t) && t.doneBy !== me) : [];
     if (!mine.length && !toVerify.length) return console.log('nothing assigned to you. Wait for the orchestrator or check inbox.');
     for (const t of toVerify) console.log(`VERIFY ${t.id}: ${t.summary} (done by ${t.doneBy})`);
-    for (const t of mine) console.log(`${t.status.padEnd(9)} ${t.id} ${depsMet(s, t) ? '' : `(waiting on ${t.deps.filter((d) => s.tasks[d]?.status !== 'ACCEPTED').join(', ')}) `}brief: ${HUB_NAME}/tasks/${t.id}.md`);
+    for (const t of mine) console.log(`${t.status.padEnd(9)} ${t.id} ${depsMet(s, t) ? '' : `(waiting on ${t.deps.filter((d) => s.tasks[d]?.status !== 'ACCEPTED').join(', ')}) `}brief: .agent-hub-orch/tasks/${t.id}.md`);
   },
 
   claim() {

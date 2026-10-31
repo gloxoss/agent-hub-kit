@@ -4,20 +4,24 @@
 //
 //   node .agent-hub/quota.mjs            all accounts
 //   node .agent-hub/quota.mjs --json     machine-readable
+//   node .agent-hub/quota.mjs --entry id single registry entry
 //
 // Config: CLIPROXY_DIR (folder with cli-proxy-api.exe), CLIPROXY_URL (default http://127.0.0.1:8317),
 // CLIPROXY_KEY (management key; if unset it is read from CLIPROXY_DIR/README_SETUP.md). The key is
 // never printed.
 import fs from 'node:fs';
 import { CFG, help } from './tools/runtime.mjs';
-help('usage: quota.mjs [--json]; CLIPROXY_DIR / CLIPROXY_URL / CLIPROXY_KEY override config.quota');
+help('usage: quota.mjs [--json] [--entry <id>]; CLIPROXY_DIR / CLIPROXY_URL / CLIPROXY_KEY override config.quota');
 import path from 'node:path';
 import net from 'node:net';
 import { spawn } from 'node:child_process';
+import { loadAccounts } from './accounts.mjs';
 
 const DIR = process.env.CLIPROXY_DIR ?? CFG.quota?.dir ?? '';
 const BASE = process.env.CLIPROXY_URL ?? CFG.quota?.url ?? 'http://127.0.0.1:8317';
 const asJson = process.argv.includes('--json');
+const entryIndex = process.argv.indexOf('--entry');
+const entryId = entryIndex !== -1 ? process.argv[entryIndex + 1] : null;
 
 function managementKey() {
   if (process.env.CLIPROXY_KEY) return process.env.CLIPROXY_KEY;
@@ -69,50 +73,73 @@ const flagFor = (fraction) => (fraction <= 0 ? 'OUT' : fraction < 0.2 ? 'LOW' : 
 async function antigravity(a) {
   const header = { Authorization: 'Bearer $TOKEN$', 'Content-Type': 'application/json', 'User-Agent': 'antigravity/hub/2.23.0 darwin/arm64' };
   const r = await upstream(a.auth_index, 'POST', 'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary', header, '{}');
-  if (r.status === 401 || r.status === 403) return { flag: 'AUTH', detail: 'login revoked or expired: re-login this account in CLIProxyAPI' };
-  if (r.status !== 200) return { flag: 'DOWN', detail: `quota call HTTP ${r.status}` };
+  if (r.status === 401 || r.status === 403) return { flag: 'AUTH', detail: 'login revoked or expired: re-login this account in CLIProxyAPI', remaining: null, resetAt: null, models: null };
+  if (r.status !== 200) return { flag: 'DOWN', detail: `quota call HTTP ${r.status}`, remaining: null, resetAt: null, models: null };
   const parts = [];
   let worst = 1;
+  let worstReset = null;
+  const models = {};
   for (const g of r.body.groups ?? []) {
+    const modelName = (g.displayName ?? '').replace(' Models', '');
+    let mWorst = 1;
+    let mReset = null;
     for (const b of g.buckets ?? []) {
-      worst = Math.min(worst, b.remainingFraction ?? 1);
-      parts.push(`${(g.displayName ?? '').replace(' Models', '')} ${b.window} ${pct(b.remainingFraction ?? 1)} (resets ${when(b.resetTime)})`);
+      const frac = b.remainingFraction ?? 1;
+      if (frac < worst) {
+        worst = frac;
+        worstReset = b.resetTime ?? null;
+      }
+      if (frac < mWorst) {
+        mWorst = frac;
+        mReset = b.resetTime ?? null;
+      }
+      parts.push(`${modelName} ${b.window} ${pct(frac)} (resets ${when(b.resetTime)})`);
     }
+    models[modelName] = { remaining: mWorst, resetAt: mReset };
   }
-  return { flag: flagFor(worst), detail: parts.join(' · ') };
+  return { flag: flagFor(worst), detail: parts.join(' · '), remaining: worst, resetAt: worstReset, models };
 }
 
 async function claude(a) {
   const r = await upstream(a.auth_index, 'GET', 'https://api.anthropic.com/api/oauth/usage', { Authorization: 'Bearer $TOKEN$', 'anthropic-beta': 'oauth-2025-04-20', Accept: 'application/json' });
-  if (r.status === 401 || r.status === 403) return { flag: 'AUTH', detail: `${r.body?.error?.message ?? 'unauthorized'}: re-login the Claude account in CLIProxyAPI` };
-  if (r.status !== 200) return { flag: 'DOWN', detail: `usage call HTTP ${r.status}` };
+  if (r.status === 401 || r.status === 403) return { flag: 'AUTH', detail: `${r.body?.error?.message ?? 'unauthorized'}: re-login the Claude account in CLIProxyAPI`, remaining: null, resetAt: null, models: null };
+  if (r.status !== 200) return { flag: 'DOWN', detail: `usage call HTTP ${r.status}`, remaining: null, resetAt: null, models: null };
   const parts = [];
   let worst = 1;
+  let worstReset = null;
   for (const [k, v] of Object.entries(r.body ?? {})) {
     if (v && typeof v.utilization === 'number') {
       const left = 1 - v.utilization / 100;
-      worst = Math.min(worst, left);
+      if (left < worst) {
+        worst = left;
+        worstReset = v.resets_at ?? null;
+      }
       parts.push(`${k} ${pct(left)} left (resets ${when(v.resets_at)})`);
     }
   }
-  return { flag: flagFor(worst), detail: parts.join(' · ') || 'no usage windows reported' };
+  return { flag: flagFor(worst), detail: parts.join(' · ') || 'no usage windows reported', remaining: parts.length ? worst : null, resetAt: worstReset, models: null };
 }
 
 async function codex(a) {
   const r = await upstream(a.auth_index, 'GET', 'https://chatgpt.com/backend-api/wham/usage', { Authorization: 'Bearer $TOKEN$', Accept: 'application/json' });
-  if (r.status === 401 || r.status === 403) return { flag: 'AUTH', detail: 'login revoked or expired: re-login the Codex account in CLIProxyAPI' };
-  if (r.status !== 200) return { flag: 'DOWN', detail: `usage call HTTP ${r.status}` };
+  if (r.status === 401 || r.status === 403) return { flag: 'AUTH', detail: 'login revoked or expired: re-login the Codex account in CLIProxyAPI', remaining: null, resetAt: null, models: null };
+  if (r.status !== 200) return { flag: 'DOWN', detail: `usage call HTTP ${r.status}`, remaining: null, resetAt: null, models: null };
   const rl = r.body?.rate_limit ?? r.body ?? {};
   const parts = [];
   let worst = 1;
+  let worstReset = null;
   for (const [k, w] of Object.entries(rl)) {
     if (w && typeof w.used_percent === 'number') {
       const left = 1 - w.used_percent / 100;
-      worst = Math.min(worst, left);
-      parts.push(`${k.replace('_window', '')} ${pct(left)} left${w.reset_at ? ` (resets ${when(new Date(w.reset_at * 1000).toISOString())})` : ''}`);
+      const resetIso = w.reset_at ? new Date(w.reset_at * 1000).toISOString() : null;
+      if (left < worst) {
+        worst = left;
+        worstReset = resetIso;
+      }
+      parts.push(`${k.replace('_window', '')} ${pct(left)} left${w.reset_at ? ` (resets ${when(resetIso)})` : ''}`);
     }
   }
-  return { flag: flagFor(worst), detail: parts.join(' · ') || 'no usage windows reported' };
+  return { flag: flagFor(worst), detail: parts.join(' · ') || 'no usage windows reported', remaining: parts.length ? worst : null, resetAt: worstReset, models: null };
 }
 
 const PROVIDERS = { antigravity, claude, codex };
@@ -120,16 +147,46 @@ const PROVIDERS = { antigravity, claude, codex };
 async function main() {
   await ensureServer();
   const list = await mgmt('auth-files');
-  const accounts = list.files ?? list;
+  let accounts = list.files ?? list;
+
+  if (entryId) {
+    const registryEntries = loadAccounts();
+    const entry = registryEntries.find((e) => e.id === entryId);
+    if (!entry) throw new Error(`account entry [${entryId}] not found in accounts.json`);
+
+    let matched = accounts.filter((a) =>
+      a.name === entry.quotaKey ||
+      a.account === entry.quotaKey ||
+      a.label === entry.quotaKey ||
+      a.name?.includes(entry.quotaKey) ||
+      a.account?.includes(entry.quotaKey) ||
+      a.name?.includes(entry.id)
+    );
+
+    if (matched.length === 0) {
+      const parts = entry.id.split('-');
+      const num = parseInt(parts[parts.length - 1], 10);
+      if (!isNaN(num)) {
+        const familyMap = { gemini: 'antigravity', codex: 'codex', claude: 'claude', opencode: 'opencode', cursor: 'cursor' };
+        const providerTarget = familyMap[entry.family] ?? entry.family;
+        const familyAccounts = accounts.filter((a) => a.name.split('-')[0] === providerTarget);
+        if (familyAccounts[num - 1]) {
+          matched = [familyAccounts[num - 1]];
+        }
+      }
+    }
+    accounts = matched;
+  }
+
   const rows = await Promise.all(accounts.map(async (a) => {
     const provider = a.name.split('-')[0];
     const base = { provider, account: a.label ?? a.account ?? a.name };
-    if (a.disabled) return { ...base, flag: 'OFF', detail: 'disabled in CLIProxyAPI' };
+    if (a.disabled) return { ...base, flag: 'OFF', detail: 'disabled in CLIProxyAPI', remaining: null, resetAt: null, models: null };
     const cooldowns = typeof a.cooldowns === 'string' ? JSON.parse(a.cooldowns || '[]') : a.cooldowns ?? [];
-    if (cooldowns.length) return { ...base, flag: 'COOLDOWN', detail: `in cooldown (${JSON.stringify(cooldowns).slice(0, 80)})` };
+    if (cooldowns.length) return { ...base, flag: 'COOLDOWN', detail: `in cooldown (${JSON.stringify(cooldowns).slice(0, 80)})`, remaining: null, resetAt: null, models: null };
     const check = PROVIDERS[provider];
-    if (!check) return { ...base, flag: 'n/a', detail: `no quota endpoint for ${provider}; ${a.failed ? `${a.failed} recent failures` : 'healthy'}` };
-    try { return { ...base, ...(await check(a)) }; } catch (e) { return { ...base, flag: 'DOWN', detail: e.message }; }
+    if (!check) return { ...base, flag: 'n/a', detail: `no quota endpoint for ${provider}; ${a.failed ? `${a.failed} recent failures` : 'healthy'}`, remaining: null, resetAt: null, models: null };
+    try { return { ...base, ...(await check(a)) }; } catch (e) { return { ...base, flag: 'DOWN', detail: e.message, remaining: null, resetAt: null, models: null }; }
   }));
   if (asJson) { console.log(JSON.stringify(rows, null, 2)); return; }
   const order = { AUTH: 0, OUT: 1, DOWN: 2, COOLDOWN: 3, LOW: 4, OFF: 5, OK: 6, 'n/a': 7 };
