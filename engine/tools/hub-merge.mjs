@@ -2,6 +2,7 @@
 // Merge a second hub folder into the live one. Safe to run twice: events are de-duplicated by content, task briefs and
 // other files are copied only when missing, and the live events.jsonl is backed up first. Dry run unless --apply.
 //   node hub-merge.mjs <srcHubDir> <destHubDir> [--apply] [--archive]
+// Default mode imports only tasks missing from the destination; --union merges both histories blindly.
 // --archive renames the source folder to <src>.merged-<date> after a successful apply, so only one hub stays live.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -16,6 +17,16 @@ const readEvents = (dir) => {
   if (!fs.existsSync(file)) return [];
   return fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
 };
+
+// Safe default: the live hub's history is never rewritten. Only tasks the destination has never heard of are imported,
+// with their own events, placed by time. Shared tasks keep the destination's story (two hubs that forked disagree on
+// them, and a blind union would flip live tasks back to an old state).
+export function importMissing(src, dest) {
+  const known = new Set(dest.filter((e) => e.type === 'task-add').map((e) => e.id));
+  const missing = new Set(src.filter((e) => e.type === 'task-add' && !known.has(e.id)).map((e) => e.id));
+  const take = src.filter((e) => e.id && missing.has(e.id));
+  return { merged: mergeEvents(take, dest), tasks: [...missing] };
+}
 
 // Union by content, ordered by time (ties keep their original order: sources first, then dest), then re-fold.
 export function mergeEvents(src, dest) {
@@ -69,6 +80,7 @@ export function runSelfTest() {
     ['merging twice changes nothing', twice.length === 3],
     ['time ordered', m.map((e) => e.t).join() === [...m.map((e) => e.t)].sort().join()],
     ['later accept wins', st.get('T1') === 'ACCEPTED' && st.get('T2') === 'OPEN'],
+    ['import keeps shared tasks untouched', (() => { const r = importMissing([...a, { t: '2026-01-01T00:00:09Z', type: 'task-add', id: 'T3' }, { t: '2026-01-01T00:00:10Z', type: 'accept', id: 'T3' }], b); const x = taskStates(r.merged); return x.get('T1') === 'OPEN' && x.get('T3') === 'ACCEPTED' && r.tasks.join() === 'T3'; })()],
   ];
 }
 
@@ -97,7 +109,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToP
   }
 
   const a = readEvents(src), b = readEvents(dest);
-  const merged = mergeEvents(a, b);
+  const full = argv.includes('--union');   // blind union of both histories: only for hubs that never diverged
+  const imp = full ? { merged: mergeEvents(a, b), tasks: [] } : importMissing(a, b);
+  const merged = imp.merged;
   const before = taskStates(b), after = taskStates(merged);
   const changed = [...after].filter(([id, s]) => before.get(id) !== s);
   const stats = { files: 0, apply };
@@ -106,6 +120,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToP
   console.log(`tasks: destination ${before.size}, merged ${after.size}; ${changed.length} task(s) change state`);
   const byState = {};
   for (const [, s] of after) byState[s] = (byState[s] ?? 0) + 1;
+  if (!full) console.log(`importing ${imp.tasks.length} task(s) the live hub does not have: ${imp.tasks.slice(0, 6).join(', ')}${imp.tasks.length > 6 ? ', ...' : ''}`);
   console.log(`merged states: ${JSON.stringify(byState)}`);
   console.log(`files to copy (missing in destination): ${stats.files}`);
   if (!apply) { console.log('(dry run: nothing written; add --apply)'); process.exit(0); }
