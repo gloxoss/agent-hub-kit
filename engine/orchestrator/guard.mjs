@@ -2,58 +2,33 @@
 import path from 'node:path';
 import os from 'node:os';
 
-export function isOrchestratorWrite(cmd, options = {}) {
-  if (!cmd) return false;
+// Only what the manager itself invokes is judged: tool calls and shell commands. Tool results, command output and
+// assistant prose are never inspected (a harmless "cat" whose output mentions "git commit" must not stop the turn).
+function invocations(ev) {
+  if (!ev) return [];
+  if (typeof ev === 'string') return [{ cmd: ev }];
+  if (typeof ev !== 'object') return [];
+  const out = [];
+  const tool = (name, input = {}) => out.push({ name, input, cmd: input.command || input.cmd || '' });
+  if (ev.type === 'tool_use' || ev.content_block?.type === 'tool_use') tool(ev.name || ev.content_block?.name, ev.input || ev.content_block?.input);
+  if (ev.type === 'assistant' && Array.isArray(ev.message?.content)) for (const c of ev.message.content) if (c?.type === 'tool_use') tool(c.name, c.input);
+  const item = ev.item;
+  if (item && item.type === 'command_execution' && item.command) out.push({ cmd: item.command });   // output lives in item.aggregated_output: ignored
+  if (!out.length && typeof ev.command === 'string') out.push({ cmd: ev.command });
+  return out;
+}
 
-  let cmdStr = '';
-
-  if (typeof cmd === 'string') {
-    cmdStr = cmd;
-  } else if (typeof cmd === 'object') {
-    if (cmd.name || cmd.type === 'tool_use' || cmd.content_block?.type === 'tool_use') {
-      const toolName = cmd.name || cmd.content_block?.name;
-      const input = cmd.input || cmd.content_block?.input || {};
-
-      const writeTools = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Task', 'Agent'];
-      if (writeTools.includes(toolName)) {
-        const filePath = input.file_path || input.path || input.file || '';
-        if (filePath) {
-          if (isOutsideAllowedPaths(filePath, options)) {
-            return true;
-          }
-        }
-      }
-
-      const readTools = ['Read'];
-      if (readTools.includes(toolName)) {
-        const filePath = input.file_path || input.path || input.file || '';
-        if (filePath && isSecretPath(filePath)) {
-          return true;
-        }
-      }
-    }
-
-    if (cmd.command || cmd.cmd) {
-      cmdStr = cmd.command || cmd.cmd;
-    } else {
-      cmdStr = JSON.stringify(cmd);
+export function isOrchestratorWrite(ev, options = {}) {
+  for (const inv of invocations(ev)) {
+    const writeTools = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'];
+    const filePath = inv.input?.file_path || inv.input?.path || inv.input?.file || '';
+    if (inv.name && writeTools.includes(inv.name) && filePath && isOutsideAllowedPaths(filePath, options)) return true;
+    if (inv.name === 'Read' && filePath && isSecretPath(filePath)) return true;
+    if (!inv.cmd) continue;
+    for (const sub of inv.cmd.split(/&&|\|\||;|\|/).map((x) => x.trim()).filter(Boolean)) {
+      if (hasSecretRead(sub) || hasUnauthorizedWrite(sub, options)) return true;
     }
   }
-
-  if (!cmdStr) return false;
-
-  const subcommands = cmdStr.split(/&&|\|\||;|\|/).map(s => s.trim()).filter(Boolean);
-
-  for (const sub of subcommands) {
-    if (hasSecretRead(sub)) {
-      return true;
-    }
-
-    if (hasUnauthorizedWrite(sub, options)) {
-      return true;
-    }
-  }
-
   return false;
 }
 
@@ -110,7 +85,7 @@ function hasUnauthorizedWrite(sub, options = {}) {
         return true;
       }
     }
-    return true;
+    return false;
   }
 
   // Check cp src dest
