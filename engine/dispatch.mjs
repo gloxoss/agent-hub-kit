@@ -18,15 +18,48 @@ import crypto from 'node:crypto';
 import { spawn, spawnSync, execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { stage as stageSkills } from './tools/skills.mjs';
+import { fold } from './fold.mjs';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
 
 const HUB = path.dirname(fileURLToPath(import.meta.url));
-const ROOT = path.dirname(HUB);
+let ROOT = process.env.HUB_ROOT;
+if (!ROOT) {
+  try {
+    const res = spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: HUB, encoding: 'utf8' });
+    if (res.status === 0 && res.stdout.trim()) {
+      ROOT = path.dirname(res.stdout.trim());
+    }
+  } catch {}
+}
+if (!ROOT) {
+  ROOT = path.dirname(HUB);
+}
 const HUB_NAME = path.basename(HUB);
 const RUNS = path.join(HUB, 'runs');
 const JOBS = path.join(RUNS, 'jobs.jsonl');
 const OPENCODE_URL = 'http://127.0.0.1:4096';
 const RECENT_MS = 120_000;
+const NODE = (process.env.DEVBOX_NODE || os.hostname()).toLowerCase();
 fs.mkdirSync(RUNS, { recursive: true });
+
+function isInsideArea(scopePath, prefix) {
+  const p = prefix.replace(/\\/g, '/');
+  const s = scopePath.replace(/\\/g, '/');
+  if (s === p) return true;
+  const pNorm = p.endsWith('/') ? p : p + '/';
+  return s.startsWith(pNorm);
+}
+
+function localTasks() {
+  const file = path.join(HUB, 'events.jsonl');
+  const tasks = {};
+  if (!fs.existsSync(file)) return tasks;
+  const events = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+  const { tasks: tmap } = fold(events);
+  return tmap;
+}
 
 function readJson(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; }
@@ -34,7 +67,62 @@ function readJson(file, fallback) {
 
 const CFG = readJson(path.join(HUB, 'config.json'), {});
 const TABLE = readJson(path.join(HUB, 'executors.json'), { executors: [] });
+
+export function isMigration(task) {
+  if (!task) return false;
+  if (task.phase && String(task.phase).toLowerCase() === 'migration') return true;
+  const paths = CFG.migrationPaths || ["drizzle/", "migrations/", "prisma/migrations/", "db/migrations/"];
+  const scope = task.scope || task.files || [];
+  for (const scopePath of scope) {
+    const s = String(scopePath).replace(/\\/g, '/');
+    for (const mPath of paths) {
+      const m = mPath.replace(/\\/g, '/');
+      if (s === m || s.startsWith(m) || s.includes('/' + m) || s.includes(m)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
 const ALL_DEFS = Array.isArray(TABLE) ? TABLE : (TABLE.executors ?? []);
+
+function getWorktreePath(taskId) {
+  if (!CFG.worktrees?.enabled) return ROOT;
+  const wtBase = (CFG.worktrees?.base || '../{repo}-wt').replace('{repo}', path.basename(ROOT));
+  return path.resolve(ROOT, wtBase, taskId);
+}
+
+function ensureWorktree(taskId) {
+  if (!CFG.worktrees?.enabled) return ROOT;
+  const wtPath = getWorktreePath(taskId);
+  if (!fs.existsSync(wtPath)) {
+    let res = spawnSync('git', ['worktree', 'add', wtPath, '-b', `task/${taskId}`], { cwd: ROOT, encoding: 'utf8' });
+    if (res.status !== 0) {
+      res = spawnSync('git', ['worktree', 'add', wtPath, `task/${taskId}`], { cwd: ROOT, encoding: 'utf8' });
+    }
+    if (res.status !== 0) {
+      spawnSync('git', ['worktree', 'add', '--force', wtPath, `task/${taskId}`], { cwd: ROOT, encoding: 'utf8' });
+    }
+    const installMode = CFG.worktrees?.install || 'auto';
+    if (installMode !== 'none') {
+      let installCmd = 'npm';
+      let installArgs = ['ci'];
+      if (fs.existsSync(path.join(wtPath, 'pnpm-lock.yaml'))) {
+        installCmd = 'pnpm';
+        installArgs = ['install'];
+      } else if (fs.existsSync(path.join(wtPath, 'yarn.lock'))) {
+        installCmd = 'yarn';
+        installArgs = ['install'];
+      } else if (!fs.existsSync(path.join(wtPath, 'package-lock.json'))) {
+        installArgs = ['install'];
+      }
+      if (!fs.existsSync(path.join(wtPath, 'node_modules'))) {
+        spawnSync(installCmd, installArgs, { cwd: wtPath, stdio: 'ignore', windowsHide: true });
+      }
+    }
+  }
+  return wtPath;
+}
 
 // A launcher is a user-made wrapper (a PATH command, or a script in ~/.claude-launchers);
 // entries marked requiresLauncher are hidden from every chain until it exists.
@@ -82,11 +170,50 @@ function makeExecutor(def) {
   };
 }
 
+function resolveExecutor(entry) {
+  if (!entry) return null;
+  const candidates = [entry.id, entry.command, entry.family];
+  for (const c of candidates) {
+    if (c && enabled(c)) return c;
+  }
+  const familyMap = { gemini: 'agy', antigravity: 'agy', codex: 'codex', opencode: 'opencode', cursor: 'cursor', claude: 'claude-ag2-sonnet' };
+  const mapped = familyMap[entry.family] || familyMap[entry.command];
+  if (mapped && enabled(mapped)) return mapped;
+  const found = EXECUTOR_DEFS.find((d) => d.disabled !== true && (d.name.includes(entry.id) || d.name.includes(entry.family) || d.name.includes(entry.command)));
+  return found ? found.name : null;
+}
+
+function getPickedList(role, excludeList = []) {
+  try {
+    const accountsPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'accounts.mjs');
+    if (!fs.existsSync(accountsPath)) return [];
+    const { pick } = require('./accounts.mjs');
+    if (typeof pick !== 'function') return [];
+    const entries = pick({ role, hubDir: HUB_NAME, exclude: excludeList });
+    const list = [];
+    for (const entry of entries) {
+      const name = resolveExecutor(entry);
+      if (name && enabled(name) && !list.includes(name)) {
+        list.push(name);
+      }
+    }
+    return list;
+  } catch {
+    return [];
+  }
+}
+
 const EXECUTORS = Object.fromEntries(EXECUTOR_DEFS.map((d) => [d.name, makeExecutor(d)]));
 const maxSessions = (ex) => EXECUTOR_MAP[ex]?.maxSessions ?? 2;
-const buildOrder = (Array.isArray(TABLE.buildOrder) ? TABLE.buildOrder : EXECUTOR_DEFS.map((d) => d.name)).filter(enabled);
-const reviewOrder = (Array.isArray(TABLE.reviewOrder) ? TABLE.reviewOrder : EXECUTOR_DEFS.map((d) => d.name))
+
+const staticBuild = (Array.isArray(TABLE.buildOrder) ? TABLE.buildOrder : EXECUTOR_DEFS.map((d) => d.name)).filter(enabled);
+const pickedBuild = getPickedList('builder');
+const buildOrder = pickedBuild.length ? [...new Set([...pickedBuild, ...staticBuild])] : staticBuild;
+
+const staticReview = (Array.isArray(TABLE.reviewOrder) ? TABLE.reviewOrder : EXECUTOR_DEFS.map((d) => d.name))
   .filter((n) => enabled(n) && ['reviewer', 'both'].includes(EXECUTOR_MAP[n].kind));
+const pickedReview = getPickedList('reviewer');
+const reviewOrder = pickedReview.length ? [...new Set([...pickedReview, ...staticReview])] : staticReview;
 
 // Load prompt templates (worker.md and review.md).
 const WORKER_TMPL = fs.existsSync(path.join(HUB, 'templates', 'prompts', 'worker.md'))
@@ -118,6 +245,44 @@ const readJobs = () => (fs.existsSync(JOBS) ? fs.readFileSync(JOBS, 'utf8').trim
 const record = (job) => fs.appendFileSync(JOBS, JSON.stringify(job) + '\n');
 const rel = (p) => path.relative(ROOT, p).replace(/\\/g, '/');
 
+const DURATIONS_FILE = path.join(RUNS, 'durations.json');
+const RECORDED_DURATIONS_FILE = path.join(RUNS, 'durations-recorded.json');
+
+function recordDuration(job) {
+  if (!job || !job.t) return;
+  try {
+    let recorded = {};
+    try { recorded = JSON.parse(fs.readFileSync(RECORDED_DURATIONS_FILE, 'utf8')); } catch {}
+    if (recorded[job.id]) return;
+
+    const startTime = Date.parse(job.t);
+    if (isNaN(startTime)) return;
+    const durationMin = Math.max(1, (Date.now() - startTime) / 60_000);
+    const phase = job.mode ?? (job.review ? 'review' : 'run');
+    const key = `${job.executor}:${phase}`;
+
+    let data = {};
+    try { data = JSON.parse(fs.readFileSync(DURATIONS_FILE, 'utf8')); } catch {}
+
+    data.samples = data.samples || {};
+    data.samples[key] = data.samples[key] || [];
+    data.samples[key].push(durationMin);
+    if (data.samples[key].length > 50) data.samples[key].shift();
+
+    const samples = [...data.samples[key]].sort((a, b) => a - b);
+    const mid = Math.floor(samples.length / 2);
+    const median = samples.length % 2 !== 0 ? samples[mid] : (samples[mid - 1] + samples[mid]) / 2;
+
+    data.durations = data.durations || {};
+    data.durations[key] = samples;
+    data[key] = Math.round(median * 10) / 10;
+
+    fs.writeFileSync(DURATIONS_FILE, JSON.stringify(data, null, 1));
+    recorded[job.id] = true;
+    fs.writeFileSync(RECORDED_DURATIONS_FILE, JSON.stringify(recorded, null, 1));
+  } catch {}
+}
+
 // Windows launchers are .cmd files, which only run through a shell, and the shell does not quote
 // arguments for us: a prompt with spaces would arrive as separate words. Build one quoted command line.
 const quote = (a) => (/^[\w@%+=:,./\\-]+$/.test(a) ? a : `"${String(a).replace(/"/g, '\\"')}"`);
@@ -130,10 +295,13 @@ function run(cmd, args, options) {
 // Lanes are the builder-N ids whose build dirs are listed in tsconfig.json; without them, no lane is offered.
 function lanes() {
   if (Array.isArray(CFG.lanes) && CFG.lanes.length) return CFG.lanes;
+  let found = [];
   try {
     const ts = fs.readFileSync(path.join(ROOT, 'tsconfig.json'), 'utf8');
-    return [...new Set([...ts.matchAll(/\.next-(builder-\d+)\/types/g)].map((m) => m[1]))].sort((a, b) => Number(a.split('-')[1]) - Number(b.split('-')[1]));
-  } catch { return []; }
+    found = [...new Set([...ts.matchAll(/\.next-(builder-\d+)\/types/g)].map((m) => m[1]))].sort((a, b) => Number(a.split('-')[1]) - Number(b.split('-')[1]));
+  } catch {}
+  if (found.length) return found;
+  return ['builder-1', 'builder-2', 'builder-3', 'builder-4', 'builder-5', 'builder-6'];
 }
 
 // Windows reuses PIDs, so a finished job can look alive: it is live only if its log has no exit marker.
@@ -163,6 +331,41 @@ function hubCmd(args, quiet = false) {
 
 function serverUp() {
   try { return execSync('netstat -ano', { encoding: 'utf8' }).split('\n').some((l) => l.includes(':4096 ') && l.includes('LISTEN')); } catch { return false; }
+}
+
+const DISPATCH_DURATIONS_FILE = path.join(RUNS, 'durations.json');
+function updateDurations(alive) {
+  let data = { durations: {}, processed: {} };
+  try {
+    const parsed = JSON.parse(fs.readFileSync(DISPATCH_DURATIONS_FILE, 'utf8'));
+    data.durations = parsed.durations || parsed;
+    data.processed = parsed.processed || {};
+  } catch {}
+  const jobs = readJobs();
+  let updated = false;
+  for (const job of jobs) {
+    if (data.processed[job.id]) continue;
+    if (!isLive(job, alive)) {
+      const logPath = path.join(ROOT, job.log);
+      let durationMin = 0;
+      try {
+        const stats = fs.statSync(logPath);
+        durationMin = Math.max(1, Math.round((stats.mtimeMs - Date.parse(job.t)) / 60000));
+      } catch {
+        durationMin = Math.max(1, Math.round((Date.now() - Date.parse(job.t)) / 60000));
+      }
+      const phase = job.mode === 'review' || job.review ? 'review' : 'run';
+      const key = `${job.executor}:${phase}`;
+      data.durations[key] ??= [];
+      data.durations[key].push(durationMin);
+      data.processed[job.id] = true;
+      updated = true;
+    }
+  }
+  if (updated) {
+    try { fs.writeFileSync(DISPATCH_DURATIONS_FILE, JSON.stringify(data, null, 1)); } catch {}
+  }
+  return data;
 }
 
 // PIDs currently alive, as strings. Windows uses tasklist (CSV), POSIX uses ps.
@@ -200,7 +403,8 @@ function launch(executor, message, base, opts = {}) {
   // write to a pipe. So a detached runner (this script, mode _runner) owns the pipe and streams to the log.
   // Codex writes the verdict file itself; for other reviewers the runner extracts it from the final result.
   const verdictArg = opts.outFile && executor !== 'codex' ? [opts.outFile] : [];
-  const runner = spawn(process.execPath, [fileURLToPath(import.meta.url), '_runner', `${base}.log`, JSON.stringify([cmd, args]), ...verdictArg], { cwd: ROOT, detached: true, stdio: 'ignore', windowsHide: true });
+  const runnerCwd = opts.cwd || ROOT;
+  const runner = spawn(process.execPath, [fileURLToPath(import.meta.url), '_runner', `${base}.log`, JSON.stringify([cmd, args]), ...verdictArg], { cwd: runnerCwd, detached: true, stdio: 'ignore', windowsHide: true });
   runner.unref();
   return { pid: runner.pid, sessionId: args.includes('--session-id') ? sid : null };
 }
@@ -210,7 +414,7 @@ function launch(executor, message, base, opts = {}) {
 function runner(logFile, spec, verdictFile) {
   const [cmd, args] = JSON.parse(spec);
   const out = fs.createWriteStream(logFile, { flags: 'a' });
-  const child = spawn(...run(cmd, args, { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }));
+  const child = spawn(...run(cmd, args, { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, HUB_ROOT: ROOT }, windowsHide: true }));
   child.stdout.pipe(out, { end: false });
   child.stderr.pipe(out, { end: false });
   child.on('close', (code) => {
@@ -231,6 +435,9 @@ function jobStatus(job, alive) {
   const logPath = path.join(ROOT, job.log);
   const text = fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf8') : '';
   const running = isLive(job, alive);
+  if (!running) {
+    recordDuration(job);
+  }
   const exit = text.match(/\[dispatch\] exit (-?\d+|null)\s*$/)?.[1];
   // A clean exit is never a quota or auth problem, whatever words the agent's own output contains.
   const failed = !running && exit !== '0';
@@ -260,20 +467,22 @@ function defaultProofLines(agentId, taskId) {
   return proof.replace(/\{\{(\w+)\}\}/g, (_, k) => ({ agentId, taskId })[k] ?? '');
 }
 
-function workerPrompt(agentId, taskId) {
+function workerPrompt(agentId, taskId, worktreePath) {
   const proj = projectName();
   const skills = stageSkills(taskId);
-  const vars = { agentId, taskId, PROJECT: proj, root: ROOT, HUB_DIR: HUB_NAME, proofLines: defaultProofLines(agentId, taskId), skills };
+  const rootDir = worktreePath || getWorktreePath(taskId);
+  const vars = { agentId, taskId, PROJECT: proj, root: rootDir, HUB_DIR: HUB_NAME, proofLines: defaultProofLines(agentId, taskId), skills };
   if (WORKER_TMPL) return WORKER_TMPL.replace(/\{\{(\w+)\}\}/g, (_, k) => vars[k] ?? '');
   // Inline fallback if template is missing.
-  return `You are ${agentId}, a worker in the ${proj} agent hub. Repo root: ${ROOT}. Run every command from there.\n\nDo exactly one task, ${taskId}, then stop.\n1. Read AGENTS.md and ${HUB_NAME}/PROTOCOL.md.\n2. node ${HUB_NAME}/hub.mjs join --agent ${agentId} --role worker --tool cli --note "${taskId}"\n3. node ${HUB_NAME}/hub.mjs inbox --agent ${agentId}\n4. Read ${HUB_NAME}/tasks/${taskId}.md.\n5. node ${HUB_NAME}/hub.mjs claim ${taskId} --agent ${agentId} --files "<files>"\n6. Build it.\n7. ${defaultProofLines(agentId, taskId)}\n8. node ${HUB_NAME}/hub.mjs done ${taskId} --agent ${agentId} --summary "<summary>" --files "<files>" --verify "<cmd -> result>"\n9. node ${HUB_NAME}/hub.mjs leave --agent ${agentId}`;
+  return `You are ${agentId}, a worker in the ${proj} agent hub. Repo root: ${rootDir}. Run every command from there.\n\nDo exactly one task, ${taskId}, then stop.\n1. Read AGENTS.md and ${HUB_NAME}/PROTOCOL.md.\n2. node ${HUB_NAME}/hub.mjs join --agent ${agentId} --role worker --tool cli --note "${taskId}"\n3. node ${HUB_NAME}/hub.mjs inbox --agent ${agentId}\n4. Read ${HUB_NAME}/tasks/${taskId}.md.\n5. node ${HUB_NAME}/hub.mjs claim ${taskId} --agent ${agentId} --files "<files>"\n6. Build it.\n7. ${defaultProofLines(agentId, taskId)}\n8. node ${HUB_NAME}/hub.mjs done ${taskId} --agent ${agentId} --summary "<summary>" --files "<files>" --verify "<cmd -> result>"\n9. node ${HUB_NAME}/hub.mjs leave --agent ${agentId}`;
 }
 
-function reviewPrompt(taskId) {
+function reviewPrompt(taskId, worktreePath) {
   const proj = projectName();
-  const vars = { taskId, PROJECT: proj, root: ROOT, HUB_DIR: HUB_NAME };
+  const rootDir = worktreePath || getWorktreePath(taskId);
+  const vars = { taskId, PROJECT: proj, root: rootDir, HUB_DIR: HUB_NAME };
   if (REVIEW_TMPL) return REVIEW_TMPL.replace(/\{\{(\w+)\}\}/g, (_, k) => vars[k] ?? '');
-  return `You are a read-only code reviewer for the ${proj} hub. Repo root: ${ROOT}. Do not edit any file.\n\nReview task ${taskId}:\n1. Read ${HUB_NAME}/tasks/${taskId}.md and its latest entry in ${HUB_NAME}/CHANGELOG.md.\n2. Read the changed files.\n3. Check requirements, serializable props, no hardcoded copy, tokens, reuse, server/client boundary, accessibility.\n4. Stop rule: if the brief has a "Rework" section, FAIL only for functional bug, accessibility failure or visible layout break. Else BACKLOG: and PASS.\n5. Final message: "VERDICT: PASS" or "VERDICT: FAIL", then at most 10 findings, then BACKLOG: lines.`;
+  return `You are a read-only code reviewer for the ${proj} hub. Repo root: ${rootDir}. Do not edit any file.\n\nReview task ${taskId}:\n1. Read ${HUB_NAME}/tasks/${taskId}.md and its latest entry in ${HUB_NAME}/CHANGELOG.md.\n2. Read the changed files.\n3. Check requirements, serializable props, no hardcoded copy, tokens, reuse, server/client boundary, accessibility.\n4. Stop rule: if the brief has a "Rework" section, FAIL only for functional bug, accessibility failure or visible layout break. Else BACKLOG: and PASS.\n5. Final message: "VERDICT: PASS" or "VERDICT: FAIL", then at most 10 findings, then BACKLOG: lines.`;
 }
 
 // Health cache: one real "say HI" call per executor at most every HEALTH_TTL_MS, shared by every dispatch.
@@ -281,6 +490,47 @@ function reviewPrompt(taskId) {
 const HEALTH_FILE = path.join(RUNS, 'health.json');
 const HEALTH_TTL_MS = 10 * 60_000;
 const HEALTH_FAIL_TTL_MS = 5 * 60_000;
+
+function maybeEmitResource(msg) {
+  const stateFile = path.join(RUNS, 'resource-last.json');
+  let last = 0;
+  try {
+    const data = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    last = data.at ?? 0;
+  } catch {}
+  const now = Date.now();
+  if (now - last > 3600_000) {
+    console.log(`RESOURCE: ${msg}`);
+    try {
+      fs.writeFileSync(stateFile, JSON.stringify({ at: now, msg }));
+    } catch {}
+  }
+}
+
+function checkResources(isReview = false) {
+  const freeMB = Math.round(os.freemem() / 1048576);
+  const minMB = isReview ? (CFG.resources?.reviewMinFreeMB ?? 2048) : (CFG.resources?.buildMinFreeMB ?? 2048);
+  if (freeMB < minMB) {
+    const msg = `not dispatched: low memory (${freeMB} MB free)`;
+    console.log(msg);
+    maybeEmitResource(msg);
+    process.exit(0);
+  }
+
+  let freeDiskGB = 999;
+  try {
+    const stats = fs.statfsSync(ROOT);
+    freeDiskGB = (stats.bavail * stats.bsize) / (1024 * 1024 * 1024);
+  } catch {}
+  const minDisk = CFG.resources?.minFreeDiskGB ?? 5;
+  if (freeDiskGB < minDisk) {
+    const msg = `not dispatched: low disk (${Math.round(freeDiskGB)} GB free)`;
+    console.log(msg);
+    maybeEmitResource(msg);
+    process.exit(0);
+  }
+}
+
 function checkHealth(name, fresh = false) {
   let cache = {};
   try { cache = JSON.parse(fs.readFileSync(HEALTH_FILE, 'utf8')); } catch {}
@@ -360,6 +610,37 @@ if (mode === '_runner') {
       taskIds.splice(taskIds.indexOf(id), 1);
     }
     if (!taskIds.length) process.exit(0);
+
+    const tasksMap = localTasks();
+    const areasRes = spawnSync(process.execPath, [path.join(HUB, 'board.mjs'), 'area', 'list', '--json'], { cwd: ROOT, encoding: 'utf8', windowsHide: true });
+    let areas = [];
+    try { areas = JSON.parse(areasRes.stdout); } catch {}
+
+    for (const id of [...taskIds]) {
+      const task = tasksMap[id];
+      if (!task || !task.scope || !task.scope.length) continue;
+      let blockedBy = null;
+      for (const scopePath of task.scope) {
+        for (const area of areas) {
+          const areaNode = (area.node || '').toLowerCase();
+          if (areaNode && areaNode !== NODE) {
+            if (isInsideArea(scopePath, area.prefix)) {
+              blockedBy = { node: areaNode, prefix: area.prefix };
+              break;
+            }
+          }
+        }
+        if (blockedBy) break;
+      }
+      if (blockedBy) {
+        console.log(`not dispatched: ${id} is in ${blockedBy.node}'s area ${blockedBy.prefix}`);
+        try {
+          spawnSync(process.execPath, [path.join(HUB, 'board.mjs'), 'note', id, `requesting handover for area ${blockedBy.prefix}`], { cwd: ROOT, encoding: 'utf8', windowsHide: true });
+        } catch {}
+        taskIds.splice(taskIds.indexOf(id), 1);
+      }
+    }
+    if (!taskIds.length) process.exit(0);
   }
   const budgets = CFG.dailyJobLimit ?? {};
   const group = Object.keys(budgets).find((g) => new RegExp(`^${g.replace('*', '.*')}$`).test(executor));
@@ -376,9 +657,35 @@ if (mode === '_runner') {
     console.log(`${executor} health check ${health.problem ?? 'FAILED'}; ${taskIds.join(', ')} not dispatched.`);
     process.exit(0);
   }
-  const freeMB = Math.round(os.freemem() / 1048576);
-  if (freeMB < (CFG.resources?.buildMinFreeMB ?? 0)) { console.log(`only ${freeMB} MB RAM free (below configured build floor); ${taskIds.join(', ')} not dispatched.`); process.exit(0); }
+  checkResources(false);
   const alive = alivePids();
+
+  const migrationLockFile = path.join(RUNS, 'migration.lock');
+  if (fs.existsSync(migrationLockFile)) {
+    let lock = null;
+    try { lock = JSON.parse(fs.readFileSync(migrationLockFile, 'utf8')); } catch {}
+    if (lock) {
+      const lockJob = readJobs().find((j) => j.taskId === lock.task || j.pid === lock.pid);
+      const running = lockJob ? isLive(lockJob, alive) : alive.has(String(lock.pid));
+      if (running) {
+        console.log(`not dispatched: migration lock (${lock.task})`);
+        process.exit(0);
+      } else {
+        try { fs.unlinkSync(migrationLockFile); } catch {}
+      }
+    }
+  }
+
+  const tasksMap = localTasks();
+  const isMigrationDispatch = taskIds.some((id) => isMigration(tasksMap[id]));
+  if (isMigrationDispatch) {
+    const runningBuilds = readJobs().filter((j) => j.mode === 'run' && isLive(j, alive));
+    if (runningBuilds.length > 0) {
+      console.log(`not dispatched: migration requires zero running builds`);
+      process.exit(0);
+    }
+  }
+
   const busy = new Set(readJobs().filter((j) => j.mode === 'run' && isLive(j, alive)).map((j) => j.agentId));
   // Only build sessions count toward the cap; reviews are short and read-only.
   const runningOf = (ex) => readJobs().filter((j) => j.mode === 'run' && j.executor === ex && isLive(j, alive)).length;
@@ -392,8 +699,9 @@ if (mode === '_runner') {
     if (!agentId) { console.log(`no free lane for ${taskId}; all lanes in tsconfig.json are busy`); break; }
     // Builds use .next-<agentId>; only ids listed in tsconfig.json include are safe, otherwise Next rewrites tsconfig.
     if (lanes().length && !lanes().includes(agentId)) throw new Error(`lane ${agentId} has no build dir in tsconfig.json include`);
+    const worktreePath = ensureWorktree(taskId);
     let prompt;
-    try { prompt = workerPrompt(agentId, taskId); } catch (error) { console.log('SKILLS ' + taskId + ' not dispatched: ' + error.message); continue; }
+    try { prompt = workerPrompt(agentId, taskId, worktreePath); } catch (error) { console.log('SKILLS ' + taskId + ' not dispatched: ' + error.message); continue; }
     if (busy.has(agentId)) { console.log(agentId + ' already busy; ' + taskId + ' not dispatched.'); continue; }
     // No live job holds this lane, so a hub session still joined under its id is stale: retire it or the new worker's join is refused.
     if (!busy.has(agentId)) hubCmd(['kick', agentId, '--note', 'stale lane session'], true);
@@ -403,9 +711,14 @@ if (mode === '_runner') {
     const id = `${agentId}-${taskId}-${Date.now().toString(36)}`;
     const base = path.join(RUNS, id);
     fs.writeFileSync(`${base}.prompt.md`, prompt);
-    const { pid, sessionId: sid } = launch(executor, `Read the file ${rel(base + '.prompt.md')} and follow its instructions exactly.`, base);
+    const { pid, sessionId: sid } = launch(executor, `Read the file ${rel(base + '.prompt.md')} and follow its instructions exactly.`, base, { cwd: worktreePath });
     const job = { id, t: new Date().toISOString(), mode, executor, agentId, taskId, pid, sessionId: sid, log: rel(base + '.log') };
     record(job);
+    if (isMigration(tasksMap[taskId])) {
+      try {
+        fs.writeFileSync(migrationLockFile, JSON.stringify({ task: taskId, pid, t: new Date().toISOString() }, null, 2));
+      } catch {}
+    }
     printJob(job, { status: 'STARTED', sid, problem: null });
   }
 } else if (mode === 'review') {
@@ -421,13 +734,13 @@ if (mode === '_runner') {
   const maxReviews = EXECUTOR_MAP[executor]?.maxReviews ?? 2;
   const liveReviews = readJobs().filter((j) => j.mode === 'review' && j.executor === executor && isLive(j, alive)).length;
   if (liveReviews >= maxReviews) { console.log(`${executor} already runs ${liveReviews} reviews (limit ${maxReviews}); ${taskId} not reviewed yet.`); process.exit(0); }
-  const freeMB = Math.round(os.freemem() / 1048576);
-  if (freeMB < (CFG.resources?.reviewMinFreeMB ?? 0)) { console.log(`only ${freeMB} MB RAM free (below configured review floor); review of ${taskId} waits.`); process.exit(0); }
+  checkResources(true);
+  const worktreePath = CFG.worktrees?.enabled ? ensureWorktree(taskId) : ROOT;
   const id = `review-${taskId}-${Date.now().toString(36)}`;
   const base = path.join(RUNS, id);
   const out = `${base}.verdict.md`;
-  fs.writeFileSync(`${base}.prompt.md`, reviewPrompt(taskId));
-  const { pid, sessionId: sid } = launch(executor, `Read the file ${rel(base + '.prompt.md')} and follow its instructions exactly.`, base, { review: true, outFile: out });
+  fs.writeFileSync(`${base}.prompt.md`, reviewPrompt(taskId, worktreePath));
+  const { pid, sessionId: sid } = launch(executor, `Read the file ${rel(base + '.prompt.md')} and follow its instructions exactly.`, base, { review: true, outFile: out, cwd: worktreePath });
   const job = { id, t: new Date().toISOString(), mode, executor, taskId, pid, sessionId: sid, log: rel(base + '.log'), out: rel(out) };
   record(job);
   printJob(job, { status: 'STARTED', sid: null, problem: null });
@@ -448,9 +761,21 @@ if (mode === '_runner') {
   }
 } else if (mode === 'list') {
   const alive = alivePids();
+  updateDurations(alive);
   const jobs = argv.includes('--all') ? readJobs() : readJobs().slice(-20);
   if (!jobs.length) console.log('no jobs yet');
   for (const job of jobs) printJob(job, jobStatus(job, alive));
+} else if (mode === 'is-migration') {
+  const fixtures = [
+    { id: 'F1', phase: 'migration', scope: ['src/index.ts'] },
+    { id: 'F2', phase: 'build', scope: ['drizzle/0001_init.sql'] },
+    { id: 'F3', phase: 'build', scope: ['src/components/Card.tsx'] },
+    { id: 'F4', phase: 'chore', scope: ['migrations/2026_01_01.sql'] },
+    { id: 'F5', phase: 'build', scope: ['db/migrations/001.js'] },
+  ];
+  for (const f of fixtures) {
+    console.log(`Task ${f.id} (phase: ${f.phase}, scope: ${f.scope.join(', ')}) => isMigration: ${isMigration(f)}`);
+  }
 } else {
-  console.log('usage: health [executor|all] [--fresh] | ping [executor|all] | run <executor> <lane|auto> <task...> | review <taskId> [executor] | list [--all] | lanes | opencode-server');
+  console.log('usage: health [executor|all] [--fresh] | ping [executor|all] | run <executor> <lane|auto> <task...> | review <taskId> [executor] | list [--all] | lanes | opencode-server | is-migration');
 }

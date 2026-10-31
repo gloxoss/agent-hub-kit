@@ -55,7 +55,21 @@
       "watch": "opencode attach http://127.0.0.1:4096  (or: opencode -s {sid})",
       "restore": "Check the opencode provider key and balance (opencode auth list).",
       "disabled": false,
-      "maxReviews": 2
+      "maxReviews": 2,
+      "reviewCmd": "opencode",
+      "reviewExtraArgs": [
+        "run",
+        "--agent",
+        "audit",
+        "-m",
+        "{model}",
+        "--format",
+        "json",
+        "--title",
+        "{job}",
+        "{attach}",
+        "{msg}"
+      ]
     },
     {
       "name": "claude-grok",

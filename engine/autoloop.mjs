@@ -10,14 +10,74 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync, execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 process.chdir(ROOT);
-const HUB = path.basename(path.dirname(fileURLToPath(import.meta.url)));
+let HUB = path.basename(path.dirname(fileURLToPath(import.meta.url)));
+if (!fs.existsSync(path.join(ROOT, HUB, 'hub.mjs'))) {
+  if (fs.existsSync(path.join(ROOT, 'hub.mjs'))) HUB = '.';
+  else if (fs.existsSync(path.join(ROOT, '.agent-hub-orch', 'hub.mjs'))) HUB = '.agent-hub-orch';
+  else if (fs.existsSync(path.join(ROOT, '.hub', 'hub.mjs'))) HUB = '.hub';
+}
 const STATE = `${HUB}/autoloop-state.json`;
 const TICK_MS = 60_000;
+
+const JOBS_FILE = path.join(ROOT, HUB, 'runs', 'jobs.jsonl');
+const readJobs = () => (fs.existsSync(JOBS_FILE) ? fs.readFileSync(JOBS_FILE, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
+
+function alivePids() {
+  try {
+    if (process.platform === 'win32') {
+      const out = execSync('tasklist /FO CSV /NH', { encoding: 'utf8' });
+      return new Set([...out.matchAll(/^"[^"]+","(\d+)"/gm)].map((m) => m[1]));
+    }
+    const out = execSync('ps -eo pid=', { encoding: 'utf8' });
+    return new Set(out.split('\n').map((s) => s.trim()).filter(Boolean));
+  } catch { return new Set(); }
+}
+
+function isLive(job, alive) {
+  const logPath = path.join(ROOT, job.log || `${HUB}/runs/${job.id}.log`);
+  let text = '';
+  try { text = fs.readFileSync(logPath, 'utf8'); } catch {}
+  if (/^\[dispatch\] exit/m.test(text)) return false;
+  if (alive.has(String(job.pid))) return true;
+  try { return Date.now() - fs.statSync(logPath).mtimeMs < 120_000; } catch { return false; }
+}
+
+function killProcessTree(pid) {
+  if (!pid) return;
+  try {
+    if (process.platform === 'win32') {
+      spawnSync('taskkill', ['/pid', String(pid), '/t', '/f'], { stdio: 'ignore' });
+    } else {
+      try { execSync(`pkill -P ${pid}`); } catch {}
+      try { process.kill(pid, 'SIGKILL'); } catch {}
+      try { process.kill(-pid, 'SIGKILL'); } catch {}
+    }
+  } catch {}
+}
+
+const DURATIONS_FILE = path.join(ROOT, HUB, 'runs', 'durations.json');
+function getMedian(executor, phase) {
+  try {
+    const data = JSON.parse(fs.readFileSync(DURATIONS_FILE, 'utf8'));
+    const key = `${executor}:${phase}`;
+    if (typeof data[key] === 'number') return data[key];
+    const arr = data.durations?.[key];
+    if (!arr || arr.length === 0) return null;
+    const sorted = [...arr].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 !== 0 ? sorted[mid] : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
+  } catch {
+    return null;
+  }
+}
 
 // Read config.json for project-specific settings.
 function loadConfig() {
@@ -43,12 +103,84 @@ const ALL_DEFS = Array.isArray(TABLE) ? TABLE : (TABLE.executors ?? []);
 const EXECUTOR_DEFS = ALL_DEFS.filter((d) => !d.disabled && (!d.requiresLauncher || launcherExists(d.name)));
 const enabled = (name) => EXECUTOR_DEFS.some((d) => d.name === name);
 
-// Build fallback: strong first, from buildOrder (or the table order).
-const BUILD_FALLBACK = (Array.isArray(TABLE.buildOrder) ? TABLE.buildOrder : EXECUTOR_DEFS.map((d) => d.name))
+function resolveExecutor(entry) {
+  if (!entry) return null;
+  const candidates = [entry.id, entry.command, entry.family];
+  for (const c of candidates) {
+    if (c && enabled(c)) return c;
+  }
+  const familyMap = { gemini: 'agy', antigravity: 'agy', codex: 'codex', opencode: 'opencode', cursor: 'cursor', claude: 'claude-ag2-sonnet' };
+  const mapped = familyMap[entry.family] || familyMap[entry.command];
+  if (mapped && enabled(mapped)) return mapped;
+  const found = EXECUTOR_DEFS.find((d) => d.disabled !== true && (d.name.includes(entry.id) || d.name.includes(entry.family) || d.name.includes(entry.command)));
+  return found ? found.name : null;
+}
+
+function getPickedList(role, excludeList = []) {
+  try {
+    const accountsPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'accounts.mjs');
+    if (!fs.existsSync(accountsPath)) return [];
+    const { pick } = require('./accounts.mjs');
+    if (typeof pick !== 'function') return [];
+    const entries = pick({ role, hubDir: HUB, exclude: excludeList });
+    const list = [];
+    for (const entry of entries) {
+      const name = resolveExecutor(entry);
+      if (name && enabled(name) && !list.includes(name)) {
+        list.push(name);
+      }
+    }
+    return list;
+  } catch {
+    return [];
+  }
+}
+
+function getRemoteReviewerNode() {
+  try {
+    const out = execSync(`node ${path.join(ROOT, HUB, 'board.mjs')} area list --json`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    const areas = JSON.parse(out);
+    const now = Date.now();
+    const node = (process.env.DEVBOX_NODE || os.hostname()).toLowerCase();
+    for (const a of areas) {
+      if (a.prefix === 'reviews' && a.node && a.node.toLowerCase() !== node) {
+        if (a.since && now - Date.parse(a.since) < 3600_000) {
+          return a.node.toLowerCase();
+        }
+      }
+    }
+  } catch {}
+  return null;
+}
+
+function areWeReviewsOwner() {
+  try {
+    const out = execSync(`node ${path.join(ROOT, HUB, 'board.mjs')} area list --json`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    const areas = JSON.parse(out);
+    const now = Date.now();
+    const node = (process.env.DEVBOX_NODE || os.hostname()).toLowerCase();
+    for (const a of areas) {
+      if (a.prefix === 'reviews' && a.node && a.node.toLowerCase() === node) {
+        if (a.since && now - Date.parse(a.since) < 3600_000) {
+          return true;
+        }
+      }
+    }
+  } catch {}
+  return false;
+}
+
+// Fallbacks and picked accounts (accounts.pick integration)
+const staticBuild = (Array.isArray(TABLE.buildOrder) ? TABLE.buildOrder : EXECUTOR_DEFS.map((d) => d.name))
   .filter((n) => enabled(n) && ['builder', 'both'].includes(EXECUTOR_DEFS.find((d) => d.name === n).kind));
-// Review fallback: codex first, then cursor and sonnet alternating, fresh Claude last.
-const REVIEW_FALLBACK = (Array.isArray(TABLE.reviewOrder) ? TABLE.reviewOrder : EXECUTOR_DEFS.map((d) => d.name))
+const pickedBuild = getPickedList('builder');
+const buildOrder = pickedBuild.length ? [...new Set([...pickedBuild, ...staticBuild])] : staticBuild;
+const BUILD_FALLBACK = buildOrder;
+
+const staticReview = (Array.isArray(TABLE.reviewOrder) ? TABLE.reviewOrder : EXECUTOR_DEFS.map((d) => d.name))
   .filter((n) => enabled(n) && ['reviewer', 'both'].includes(EXECUTOR_DEFS.find((d) => d.name === n).kind));
+const pickedReview = getPickedList('reviewer');
+const reviewOrder = pickedReview.length ? [...new Set([...pickedReview, ...staticReview])] : staticReview;
 // When the first reviewer is down, these two take turns so neither drains alone.
 const SHARED_REVIEWERS = (Array.isArray(TABLE.sharedReviewers) ? TABLE.sharedReviewers : []).filter(enabled);
 
@@ -58,6 +190,21 @@ const PROBLEM = /QUOTA|AUTH|DOWN|FAILED|NO VERDICT/;
 
 const say = (s) => console.log(s);
 const DRY = process.argv.includes('--dry');
+function maybeEmitResource(msg) {
+  const stateFile = path.join(HUB, 'runs', 'resource-last.json');
+  let last = 0;
+  try {
+    const data = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    last = data.at ?? 0;
+  } catch {}
+  const now = Date.now();
+  if (now - last > 3600_000) {
+    console.log(`RESOURCE: ${msg}`);
+    try {
+      fs.writeFileSync(stateFile, JSON.stringify({ at: now, msg }));
+    } catch {}
+  }
+}
 const run = (args) => {
   if (DRY && !(args[0].endsWith('dispatch.mjs') && args[1] === 'list')) { say(`DRY ${args.join(' ')}`); return ''; }
   try { return execFileSync('node', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); }
@@ -94,14 +241,34 @@ function tasks() {
   return t;
 }
 
+function median(arr) {
+  if (!arr || arr.length === 0) return null;
+  const sorted = [...arr].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
 function jobs() {
   const out = [];
   const text = run([`${HUB}/dispatch.mjs`, 'list', '--all']);
+  const rawJobs = readJobs();
   for (const line of text.split('\n')) {
     if (!/^(builder|review)-/.test(line)) continue;
     const [name, executor, task, ...rest] = line.trim().split(/\s{2,}/);
     const id = name.split('-').pop();
-    out.push({ name, executor, task, status: rest.join(' '), review: name.startsWith('review-'), lane: name.slice(0, name.indexOf(`-${task}-`)), started: parseInt(id, 36) || 0 });
+    const raw = rawJobs.find((j) => j.taskId === task && j.executor === executor && j.id.endsWith(id)) || rawJobs.find((j) => j.taskId === task && j.executor === executor) || {};
+    out.push({
+      name,
+      executor,
+      task,
+      status: rest.join(' '),
+      review: name.startsWith('review-'),
+      lane: name.slice(0, name.indexOf(`-${task}-`)),
+      started: raw.t ? Date.parse(raw.t) : (parseInt(id, 36) || 0),
+      pid: raw.pid,
+      mode: raw.mode,
+      id: raw.id || id
+    });
   }
   return out;
 }
@@ -110,8 +277,12 @@ const latest = (js, task, review, after) => js.filter((j) => j.task === task && 
 const nextOf = (list, cur) => list[(list.indexOf(cur) + 1) % list.length];
 
 function tick(st) {
+  console.log('TICK START');
+  console.log('CALLING tasks()');
   const T = tasks();
+  console.log('CALLING jobs()');
   const J = jobs();
+  console.log('AFTER jobs()');
   const once = (key, fn) => { if (!st.handled[key]) { st.handled[key] = Date.now(); fn(); } };
   const depsMet = (t) => t.deps.every((d) => (t.strict ? T[d]?.status === 'ACCEPTED' : BUILT.has(T[d]?.status)));
   const lastBuild = (t) => latest(J, t.id, false, 0);
@@ -119,22 +290,101 @@ function tick(st) {
   const up = (ex) => !st.down[ex] || Date.now() - st.down[ex] > DOWN_MS;
   // Healthy-first: skip the reviewer that just failed, and rotate the shared reviewers when the first is down.
   const reviewer = (failed, builder) => {
+    const exclude = [failed, builder, ...Object.keys(st.down || {}).filter((e) => !up(e))].filter(Boolean);
+    const picked = getPickedList('reviewer', exclude);
     const ok = (e) => e !== failed && e !== builder && up(e);
-    if (!failed && REVIEW_FALLBACK.length && !up(REVIEW_FALLBACK[0])) {
-      const pool = SHARED_REVIEWERS.filter(ok);
-      if (pool.length) { st.rr = ((st.rr ?? 0) + 1) % pool.length; return pool[st.rr]; }
+    const pool = picked.length ? picked.filter(ok) : SHARED_REVIEWERS.filter(ok);
+    if (!failed && pool.length && !up(pool[0])) {
+      st.rr = ((st.rr ?? 0) + 1) % pool.length;
+      return pool[st.rr];
     }
-    return REVIEW_FALLBACK.find(ok) ?? null;
+    const found = (picked.length ? picked : reviewOrder).find(ok);
+    if (found) return found;
+    return SHARED_REVIEWERS.find(ok) ?? null;
   };
   const builderOf = (id) => latest(J, id, false, 0)?.executor;
-  const nextHealthy = (list, cur) => { const i = list.indexOf(cur); const order = [...list.slice(i + 1), ...list.slice(0, Math.max(i, 0))]; return order.find((e) => e !== cur && up(e) && enabled(e)) ?? nextOf(list, cur); };
+  const nextHealthy = (list, cur) => {
+    const exclude = Object.keys(st.down || {}).filter((e) => !up(e));
+    const picked = getPickedList('builder', exclude);
+    const order = picked.length ? picked : list;
+    const i = order.indexOf(cur);
+    const rotated = [...order.slice(i + 1), ...order.slice(0, Math.max(i, 0))];
+    return rotated.find((e) => e !== cur && up(e) && enabled(e)) ?? nextOf(list, cur);
+  };
   // Any rework or resume goes to a healthy executor, never back to one that is cooling down.
-  const pickBuilder = (preferred) => (preferred && up(preferred) && enabled(preferred) ? preferred : (BUILD_FALLBACK.find(up) ?? BUILD_FALLBACK[0] ?? preferred ?? 'opencode'));
+  const pickBuilder = (preferred) => {
+    const exclude = Object.keys(st.down || {}).filter((e) => !up(e));
+    const picked = getPickedList('builder', exclude);
+    const validPicked = picked.find(up);
+    if (validPicked) return validPicked;
+    if (preferred && up(preferred) && enabled(preferred)) return preferred;
+    return buildOrder.find(up) ?? buildOrder[0] ?? preferred ?? 'opencode';
+  };
+
+  // Check for overlong running jobs (> 2x median, min 20 min, default 45 min)
+  for (const j of J) {
+    if (j.status !== 'RUNNING') continue;
+    const started = j.started || Date.parse(j.t) || Date.now();
+    const elapsedMin = Math.round((Date.now() - started) / 60_000);
+    const phase = j.review ? 'review' : (j.mode || 'run');
+    let durationsData = { durations: {} };
+    try { durationsData = JSON.parse(fs.readFileSync(path.join(HUB, 'runs', 'durations.json'), 'utf8')); } catch {}
+    const key = `${j.executor}:${phase}`;
+    const arr = durationsData.durations?.[key] || [];
+    const med = median(arr);
+    const thresholdMin = med !== null ? Math.max(20, 2 * med) : 45;
+
+    if (elapsedMin > thresholdMin) {
+      once(`slow:${j.id}`, () => {
+        killProcessTree(j.pid);
+        const lane = j.lane || j.agentId;
+        if (lane) {
+          hub('kick', lane, '--note', `stopped after ${elapsedMin} min (2x normal)`);
+        }
+        const next = nextHealthy(BUILD_FALLBACK, j.executor);
+        run([`${HUB}/dispatch.mjs`, 'run', next, lane || 'auto', j.task]);
+        say(`MOVED ${j.task}: slow`);
+      });
+    }
+  }
+
+  // If we own the "reviews" area, pick up review requests from other machines
+  if (areWeReviewsOwner()) {
+    try {
+      const list = JSON.parse(execSync('gh issue list --label board --state open --limit 50 --json number,title,comments', { encoding: 'utf8' }));
+      for (const issue of list) {
+        const tid = issue.title.match(/^\[([^\]]+)\]/)?.[1];
+        if (!tid) continue;
+        const hasReviewReq = issue.comments?.some((c) => c.body && c.body.includes(`review request ${tid}`));
+        if (hasReviewReq) {
+          const existingReview = latest(J, tid, true, 0);
+          if (!existingReview && T[tid]?.status === 'REVIEW') {
+            const rv = reviewer(undefined, null);
+            if (rv) {
+              once(`remote-review-dispatch:${tid}`, () => {
+                run([`${HUB}/dispatch.mjs`, 'review', tid, rv]);
+                say(`DISPATCHED remote review for ${tid} on ${rv}`);
+              });
+            }
+          }
+        }
+      }
+    } catch {}
+  }
 
   for (const t of Object.values(T)) {
     if (t.status === 'REVIEW') {
       const r = latest(J, t.id, true, t.doneAt - 5_000);
       if (!r) {
+        const remoteNode = getRemoteReviewerNode();
+        if (remoteNode) {
+          once(`review-request:${t.id}`, () => {
+            try {
+              execSync(`node ${path.join(ROOT, HUB, 'board.mjs')} note ${t.id} "review request ${t.id}"`, { stdio: 'ignore' });
+            } catch {}
+          });
+          continue;
+        }
         const rv = reviewer(undefined, builderOf(t.id));
         // Keyed per 10-minute window: if dispatch could not start the review (reviewer at its session cap),
         // no review job appears and the next window tries again instead of parking forever.
@@ -216,6 +466,40 @@ function tick(st) {
     }
   }
 
+  // Check for overlong RUNNING jobs (Task S-05-05)
+  const allJobs = readJobs();
+  const alivePidsSet = alivePids();
+  for (const j of allJobs) {
+    if (j.mode !== 'run') continue;
+    if (!isLive(j, alivePidsSet)) continue;
+
+    const ageMin = Math.round((Date.now() - Date.parse(j.t)) / 60000);
+    const phase = j.mode === 'review' ? 'review' : 'run';
+    const medianVal = getMedian(j.executor, phase);
+    const defaultMedian = 45;
+    const baseMedian = medianVal !== null ? medianVal : defaultMedian;
+    const limit = Math.max(20, 2 * baseMedian);
+
+    if (ageMin >= limit) {
+      once(`slow:${j.id}:${Math.floor(Date.now() / 300_000)}`, () => {
+        killProcessTree(j.pid);
+        const lane = j.agentId || j.lane;
+        if (lane) {
+          try { hub('kick', lane, '--note', `autoloop: stopped after ${ageMin} min (2x normal)`); } catch {}
+        }
+        const next = nextHealthy(BUILD_FALLBACK, j.executor);
+        run([`${HUB}/dispatch.mjs`, 'run', next, lane || 'auto', j.taskId]);
+        try {
+          const taskFile = `${HUB}/tasks/${j.taskId}.md`;
+          if (fs.existsSync(taskFile)) {
+            fs.appendFileSync(taskFile, `\n## Requeue\nStopped after ${ageMin} min (2x normal), requeued to ${next}.\n`);
+          }
+        } catch {}
+        say(`MOVED ${j.taskId}: slow`);
+      });
+    }
+  }
+
   // Queued new tasks: { "<task>": "<executor>" } in autoloop-queue.json, dispatched once their deps are built.
   let queue = {};
   try { queue = JSON.parse(fs.readFileSync(`${HUB}/autoloop-queue.json`, 'utf8')); } catch {}
@@ -254,6 +538,63 @@ function tick(st) {
     const live = J.filter((j) => j.status === 'RUNNING').map((j) => `${j.review ? 'review' : 'build'}:${j.task}@${j.executor}`);
     say(`DIGEST ${Object.entries(count).map(([k, v]) => `${k} ${v}`).join(', ')} | running: ${live.join(' ') || 'none'}`);
   }
+
+  if (Date.now() - (st.lastGc ?? 0) > 3600_000) {
+    st.lastGc = Date.now();
+    try { hub('gc', '--stale-min', '120'); } catch {}
+  }
+
+  if (Date.now() - (st.lastWorktreeSweep ?? 0) > 3600_000) {
+    st.lastWorktreeSweep = Date.now();
+    try {
+      let freeDiskGB = 999;
+      try {
+        const stats = fs.statfsSync(ROOT);
+        freeDiskGB = (stats.bavail * stats.bsize) / (1024 * 1024 * 1024);
+      } catch {}
+      const minDisk = CFG.resources?.minFreeDiskGB ?? 5;
+      if (freeDiskGB < minDisk) {
+        maybeEmitResource(`low disk (${Math.round(freeDiskGB)} GB free)`);
+      }
+
+      const wtBase = path.resolve(ROOT, (CFG.worktrees?.base || '../{repo}-wt').replace('{repo}', path.basename(ROOT)));
+      if (fs.existsSync(wtBase)) {
+        const entries = fs.readdirSync(wtBase, { withFileTypes: true });
+        for (const entry of entries) {
+          if (!entry.isDirectory()) continue;
+          const taskId = entry.name;
+          const wtPath = path.join(wtBase, taskId);
+          const status = T[taskId]?.status;
+
+          if (status === 'ACCEPTED' || status === 'CANCELLED') {
+            try {
+              execSync(`git worktree remove --force ${wtPath}`, { cwd: ROOT, stdio: 'ignore' });
+              execSync(`git branch -d task/${taskId}`, { cwd: ROOT, stdio: 'ignore' });
+              execSync('git worktree prune', { cwd: ROOT, stdio: 'ignore' });
+            } catch {
+              try { fs.rmSync(wtPath, { recursive: true, force: true }); } catch {}
+              try { execSync('git worktree prune', { cwd: ROOT, stdio: 'ignore' }); } catch {}
+            }
+          } else {
+            try {
+              const stats = fs.statSync(wtPath);
+              const ageMs = Date.now() - (stats.birthtimeMs || stats.mtimeMs);
+              const hasRunningJob = J.some((j) => j.task === taskId && j.status === 'RUNNING');
+              if (ageMs > 24 * 3600_000 && !hasRunningJob) {
+                say(`STALE WORKTREE ${taskId}: older than 24h with no running job`);
+              }
+            } catch {}
+          }
+        }
+      }
+    } catch {}
+  }
+
+  if (Date.now() - (st.lastCompact ?? 0) > 7 * 24 * 3600_000) {
+    st.lastCompact = Date.now();
+    try { hub('compact'); } catch {}
+  }
+  console.log('TICK END');
 }
 
 const st = prune(load());

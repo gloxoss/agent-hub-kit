@@ -42,9 +42,12 @@ function tree(src, dest, template = false) {
   }
 }
 console.log('Scaffolding ' + opt.name + ' (pack: ' + opt.pack + ') in ' + TARGET);
-for (const name of ['hub.mjs', 'dispatch.mjs', 'autoloop.mjs', 'quota.mjs', 'accept.mjs', 'board.mjs', 'sync.mjs', 'executors.json']) write(path.join(HUB, name), fs.readFileSync(path.join(HERE, name)));
+for (const name of ['hub.mjs', 'dispatch.mjs', 'autoloop.mjs', 'quota.mjs', 'accept.mjs', 'board.mjs', 'sync.mjs', 'fold.mjs', 'accounts.mjs', 'executors.json']) write(path.join(HUB, name), fs.readFileSync(path.join(HERE, name)));
 write(path.join(HUB, 'config.json'), JSON.stringify({ ...defaults, hubDir: HUB_DIR }, null, 2) + '\n');
 tree(path.join(HERE, 'tools'), path.join(HUB, 'tools'));
+tree(path.join(HERE, 'orchestrator'), path.join(HUB, 'orchestrator'));
+// Read-only reviewer agent for OpenCode (edit and bash denied): reviews never change the code they review.
+write(path.join(TARGET, '.opencode', 'agents', 'audit.md'), fs.readFileSync(path.join(HERE, '..', 'templates', 'opencode', 'audit.md'), 'utf8'));
 write(path.join(HUB, 'events.jsonl'), '');
 write(path.join(HUB, 'autoloop-queue.json'), '{}\n');
 for (const name of ['tasks', 'runs', 'skills', 'skills-cache', 'pages']) fs.mkdirSync(path.join(HUB, name), { recursive: true });
