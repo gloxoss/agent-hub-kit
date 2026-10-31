@@ -56,6 +56,8 @@ export function collect(hubDir) {
     try { logText = fs.readFileSync(logPath, 'utf8'); } catch {}
     if (logText.includes('[dispatch] exit')) return false;
     if (j.pid && alivePids.has(String(j.pid))) return true;
+    // A job with no live process is not running, whatever its log says (old runs lost their exit line in restarts).
+    if (j.pid) return false;
     try {
       const mtime = fs.statSync(logPath).mtimeMs;
       if (now - mtime < 120_000) return true;
@@ -220,13 +222,16 @@ export function formatDashboard(data, columns = 80, useColor = true) {
   if (Object.keys(quotas).length === 0) {
     lines.push(c('2', '  (no quota data cached)'));
   } else {
-    for (const [acc, info] of Object.entries(quotas)) {
-      const rem = info.remaining ?? info.quota ?? 1.0;
-      let col = '32'; // green ok
-      if (rem <= 0) col = '31'; // red out
-      else if (rem <= 0.2) col = '33'; // yellow low
-      lines.push(`  Account: ${acc} | Remaining: ${c(col, String(rem))}`);
+    // The cache is a list of rows {provider, account, remaining, models:{pool:{remaining}}}; older caches were keyed objects.
+    const rows = Array.isArray(quotas) ? quotas : Object.entries(quotas).map(([account, v]) => ({ account, ...v }));
+    const colour = (rem) => (rem <= 0 ? '31' : rem <= 0.2 ? '33' : '32');
+    const pct = (rem) => `${Math.round((rem ?? 0) * 100)}%`;
+    for (const r of rows.slice(0, 24)) {
+      const name = String(r.account ?? '?').split('@')[0].slice(0, 22);
+      const pools = Object.entries(r.models ?? {}).map(([pool, m]) => `${pool.split(' ')[0]} ${c(colour(m.remaining ?? 0), pct(m.remaining))}`).join('  ');
+      lines.push(`  ${name.padEnd(22)} ${pools || c(colour(r.remaining ?? 1), pct(r.remaining ?? 1))}`);
     }
+    if (rows.length > 24) lines.push(c('2', `  ... and ${rows.length - 24} more accounts`));
   }
 
   // Panel 4: Manager & Builder Usage Today
