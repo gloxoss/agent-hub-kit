@@ -208,9 +208,13 @@ function maybeEmitResource(msg) {
 const run = (args) => {
   if (DRY && !(args[0].endsWith('dispatch.mjs') && args[1] === 'list')) { say(`DRY ${args.join(' ')}`); return ''; }
   try { return execFileSync('node', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); }
-  catch (e) { return `ERROR ${String(e.stderr || e.message).split('\n')[0]}`; }
+  catch (e) {
+    const why = String(e.stderr || e.message).split('\n')[0];
+    say(`DISPATCH-FAIL ${args.slice(0, 4).map((x) => String(x).replace(/^.*[\\/]/, '')).join(' ')}: ${why.slice(0, 160)}`);   // never swallow a failed dispatch
+    return `ERROR ${why}`;
+  }
 };
-const hub = (...a) => run([`${HUB}/hub.mjs`, ...a, '--agent', (CFG.orchestratorAgent || 'orchestrator')]);
+const hub =(...a) => run([`${HUB}/hub.mjs`, ...a, '--agent', (CFG.orchestratorAgent || 'orchestrator')]);
 const load = () => { try { return JSON.parse(fs.readFileSync(STATE, 'utf8')); } catch { return { handled: {}, lastDigest: 0 }; } };
 // Retry-type keys expire after 30 min so a stuck task is retried instead of silently parked.
 const EXPIRE = /^(retry|queue|rework|resume|review):/;

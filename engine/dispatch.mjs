@@ -563,7 +563,7 @@ function checkHealth(name, fresh = false) {
   const hi = [...text.matchAll(/HI from[^"\\\n]*/gi)].map((m) => m[0]).find((h) => !h.includes('<your model name>'));
   const result = hi && r.status === 0
     ? { ok: true, model: hi.trim(), at: Date.now() }
-    : { ok: false, problem: r.error?.code === 'ETIMEDOUT' ? 'TIMEOUT' : (diagnose(text) ?? 'FAILED'), at: Date.now(), detail: `exit ${r.status}${r.error ? ' ' + r.error.code : ''}: ${text.replace(/s+/g, ' ').trim().slice(-240)}` };
+    : { ok: false, problem: r.error?.code === 'ETIMEDOUT' ? 'TIMEOUT' : (diagnose(text) ?? 'FAILED'), at: Date.now(), detail: `${cmd} (cwd ${ROOT}) exit ${r.status}${r.error ? " " + r.error.code : ""}: ${text.replace(/s+/g, ' ').trim().slice(-240)}` };
   // Re-read just before writing: parallel checks would otherwise overwrite each other's results.
   try { cache = JSON.parse(fs.readFileSync(HEALTH_FILE, 'utf8')); } catch {}
   cache[name] = result;
