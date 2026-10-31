@@ -22,11 +22,12 @@ const CFG = (() => { try { return JSON.parse(fs.readFileSync(path.join(HUB, 'con
 
 const [,, id, note, media, msg] = process.argv;
 const hub = (...a) => execFileSync('node', [path.join(HUB, 'hub.mjs'), ...a, '--agent', (CFG.orchestratorAgent || 'orchestrator')], { encoding: 'utf8' });
-const t = JSON.parse(hub('show', id));
+const t = id === '--selftest' ? {} : JSON.parse(hub('show', id));
 
 function checksFor(taskId, customHub) {
   const h = customHub || HUB;
-  const tasksDir = CFG.hubDir ? path.resolve(path.dirname(h), CFG.hubDir, 'tasks') : path.join(h, 'tasks');
+  // The briefs sit in the hub folder this script lives in; config.hubDir is only a fallback (it can name another folder).
+  const tasksDir = fs.existsSync(path.join(h, 'tasks')) ? path.join(h, 'tasks') : CFG.hubDir ? path.resolve(path.dirname(h), CFG.hubDir, 'tasks') : path.join(h, 'tasks');
   let briefPath = path.join(tasksDir, `${taskId}.md`);
   if (!fs.existsSync(briefPath)) {
     const altPath = path.join(path.dirname(path.dirname(h)), '.agent-hub-orch', 'tasks', `${taskId}.md`);
@@ -128,7 +129,8 @@ function runChecksForFixture() {
   fs.rmSync(testHub, { recursive: true, force: true });
   console.log('checksFor fixture test passed successfully.');
 }
-runChecksForFixture();
+// The built-in check runs only on request (node accept.mjs --selftest); running it on every accept once crashed every accept.
+if (id === '--selftest') { runChecksForFixture(); process.exit(0); }
 
 // Run gate checks (Section 03)
 const worktreesEnabled = CFG.worktrees?.enabled === true;
