@@ -9,10 +9,11 @@ import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
 import { help } from './runtime.mjs';
 
-help("usage: fleet-metrics.mjs [--hours <n>] [--json]");
+help("usage: fleet-metrics.mjs [--hours <n>] [--json] [--hub <hubDir>]");
 
 const HERE = path.resolve(path.dirname(fileURLToPath(import.meta.url)));
-const HUB = path.resolve(HERE, '..');
+const hubArgAt = process.argv.indexOf('--hub');
+const HUB = hubArgAt > 0 ? path.resolve(process.argv[hubArgAt + 1]) : (process.env.AGENT_HUB_DIR ? path.resolve(process.env.AGENT_HUB_DIR) : path.resolve(HERE, '..'));
 const ROOT = path.dirname(HUB);
 
 const args = process.argv.slice(2);
@@ -22,6 +23,8 @@ let jsonOnly = false;
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--hours' && args[i+1]) {
     hours = parseFloat(args[i+1]);
+    i++;
+  } else if (args[i] === '--hub') {
     i++;
   } else if (args[i] === '--json') {
     jsonOnly = true;
