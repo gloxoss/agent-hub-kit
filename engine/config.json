@@ -20,8 +20,10 @@
   "checkHealthBeforeDispatch": false,
   "dailyJobLimit": {},
   "resources": {
-    "buildMinFreeMB": 0,
-    "reviewMinFreeMB": 0
+    "buildMinFreeMB": 2500,
+    "reviewMinFreeMB": 2000,
+    "maxJobMinutes": 90,
+    "maxSilenceMinutes": 20
   },
   "locales": {
     "path": "locales",

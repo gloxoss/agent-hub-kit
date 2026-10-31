@@ -267,7 +267,7 @@ export async function runTurn(entry, prompt, session = {}) {
             state.sessions = state.sessions || {};
             state.sessions[entryName] = {
               ...(state.sessions[entryName] || {}),
-              downUntil: Date.now() + 2 * 3600 * 1000,
+              downUntil: Date.now() + 10 * 60 * 1000,   // short: a fluke must not push the whole free pool out for hours
               lastViolation: new Date().toISOString()
             };
             state.notes = state.notes || [];

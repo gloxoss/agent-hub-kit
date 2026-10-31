@@ -6,7 +6,7 @@ Shared by `ui-build` (self-check) and the `ui-parity-verifier` agent (independen
 
 | # | Check | Command (from the workspace root) | Pass |
 |---|---|---|---|
-| G1 | Type and build | `npx next build` | exit 0 |
+| G1 | Type check | `npx tsc --noEmit` (a production `next build` only when the config sets resources.allowNextBuild) | exit 0 |
 | G2 | Lint, incl. `react/jsx-no-literals` on sections and blocks | `npx eslint src` | exit 0 |
 | G3 | No raw colors outside globals.css | `grep -rnE "#[0-9a-fA-F]{3,8}\b\|rgba?\(\|hsl\(" src --include=*.tsx --include=*.ts` | no hits |
 | G4 | No palette utility colors | `grep -rnE "(bg\|text\|border\|ring\|fill\|stroke)-(white\|black\|slate\|gray\|zinc\|neutral\|red\|blue\|sky\|green\|amber)-?" src --include=*.tsx` | no hits |

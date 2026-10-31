@@ -4,7 +4,12 @@
     "command": "claude-ag2",
     "model": "gemini-3-flash",
     "family": "claude",
-    "roles": ["orchestrator", "responder"],
+    "roles": [
+      "orchestrator",
+      "builder",
+      "reviewer",
+      "responder"
+    ],
     "cost": "free",
     "owner": "fleet",
     "enabled": true,
@@ -16,7 +21,11 @@
     "command": "codex",
     "model": null,
     "family": "codex",
-    "roles": ["orchestrator"],
+    "roles": [
+      "orchestrator",
+      "builder",
+      "reviewer"
+    ],
     "cost": "plan",
     "owner": "fleet",
     "enabled": true,
@@ -27,7 +36,10 @@
     "command": "claude-ag2",
     "model": "claude-sonnet-4-6",
     "family": "claude",
-    "roles": ["orchestrator", "responder"],
+    "roles": [
+      "orchestrator",
+      "responder"
+    ],
     "cost": "plan",
     "owner": "fleet",
     "enabled": true,
@@ -39,7 +51,10 @@
     "command": "claude",
     "model": "sonnet",
     "family": "claude",
-    "roles": ["orchestrator", "responder"],
+    "roles": [
+      "orchestrator",
+      "responder"
+    ],
     "cost": "plan",
     "owner": "user",
     "enabled": true,
@@ -50,7 +65,9 @@
     "command": "cursor-agent",
     "model": null,
     "family": "cursor",
-    "roles": ["builder"],
+    "roles": [
+      "builder"
+    ],
     "cost": "plan",
     "owner": "fleet",
     "enabled": false,
@@ -61,7 +78,10 @@
     "command": "claude-ds1",
     "model": null,
     "family": "claude",
-    "roles": ["builder", "reviewer"],
+    "roles": [
+      "builder",
+      "reviewer"
+    ],
     "cost": "paid",
     "owner": "fleet",
     "enabled": false,
@@ -72,7 +92,10 @@
     "command": "claude-or",
     "model": null,
     "family": "claude",
-    "roles": ["builder", "reviewer"],
+    "roles": [
+      "builder",
+      "reviewer"
+    ],
     "cost": "paid",
     "owner": "fleet",
     "enabled": false,

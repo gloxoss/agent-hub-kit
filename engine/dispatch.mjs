@@ -117,7 +117,11 @@ function ensureWorktree(taskId) {
         installArgs = ['install'];
       }
       if (!fs.existsSync(path.join(wtPath, 'node_modules'))) {
-        spawnSync(installCmd, installArgs, { cwd: wtPath, stdio: 'ignore', windowsHide: true });
+        // Same lockfile as the main checkout: share its node_modules (0 bytes, 0 CPU) instead of a full install per worktree.
+        const main = path.join(ROOT, 'node_modules');
+        const sameLock = ['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock'].every((f) => !fs.existsSync(path.join(wtPath, f)) || (fs.existsSync(path.join(ROOT, f)) && fs.readFileSync(path.join(wtPath, f)).equals(fs.readFileSync(path.join(ROOT, f)))));
+        if (fs.existsSync(main) && sameLock) { try { fs.symlinkSync(main, path.join(wtPath, 'node_modules'), 'junction'); } catch { /* fall back to install */ } }
+        if (!fs.existsSync(path.join(wtPath, 'node_modules'))) spawnSync(installCmd, installArgs, { cwd: wtPath, stdio: 'ignore', windowsHide: true });
       }
     }
   }
@@ -414,7 +418,7 @@ function launch(executor, message, base, opts = {}) {
 function runner(logFile, spec, verdictFile) {
   const [cmd, args] = JSON.parse(spec);
   const out = fs.createWriteStream(logFile, { flags: 'a' });
-  const child = spawn(...run(cmd, args, { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, HUB_ROOT: ROOT }, windowsHide: true }));
+  const child = spawn(...run(cmd, args, { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, HUB_ROOT: ROOT }, windowsHide: true, detached: process.platform !== 'win32' }));
   child.stdout.pipe(out, { end: false });
   child.stderr.pipe(out, { end: false });
   child.on('close', (code) => {
@@ -429,6 +433,18 @@ function runner(logFile, spec, verdictFile) {
     });
   });
   child.on('error', (err) => out.end(`\n[dispatch] error ${err.message}\n`));
+  // Watchdog: a worker that outlives its wall-clock budget or goes silent is killed (exit 124) so it cannot sit in RAM for hours.
+  const maxMs = (CFG.resources?.maxJobMinutes ?? 90) * 60_000, silentMs = (CFG.resources?.maxSilenceMinutes ?? 20) * 60_000;
+  const started = Date.now();
+  const dog = setInterval(() => {
+    let quiet = 0; try { quiet = Date.now() - fs.statSync(logFile).mtimeMs; } catch { /* log not there yet */ }
+    const why = Date.now() - started > maxMs ? `over ${maxMs / 60000} min` : quiet > silentMs ? `silent for ${Math.round(quiet / 60000)} min` : null;
+    if (!why) return;
+    clearInterval(dog);
+    out.write(`\n[dispatch] watchdog: ${why}, killing the worker\n`);
+    try { process.kill(-child.pid, 'SIGKILL'); } catch { try { child.kill('SIGKILL'); } catch { /* already gone */ } }
+  }, 30_000);
+  child.on('close', () => clearInterval(dog));
 }
 
 function jobStatus(job, alive) {

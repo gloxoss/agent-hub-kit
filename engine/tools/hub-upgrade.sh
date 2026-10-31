@@ -27,7 +27,7 @@ const merge = (a, b) => { for (const key of Object.keys(b)) { if (a[key] === und
 merge(l, k);
 // Rules the owner set on the old engine, carried over as config:
 l.checkHealthBeforeDispatch = true;      // "check quota/health before running agents"
-l.resources = { ...(l.resources ?? {}), buildMinFreeMB: 3000, reviewMinFreeMB: 1500, minFreeDiskGB: 3 };   // old hard floor: 3000 MB
+l.resources = { ...(l.resources ?? {}), buildMinFreeMB: Math.max(l.resources?.buildMinFreeMB ?? 0, 3000), reviewMinFreeMB: Math.max(l.resources?.reviewMinFreeMB ?? 0, 1500), minFreeDiskGB: 3 };   // never lower a floor the owner already raised
 l.cooldownMinutes = l.cooldownMinutes ?? 20;                             // rotating Gemini accounts: one QUOTA hit = one account
 l.acceptGate = l.acceptGate ?? 'warn';                                   // record failing checks, do not bounce work back until the machine can run them
 if (!l.orchestratorAgent) l.orchestratorAgent = process.env.ORCH_AGENT || l.orchestratorAgent;
