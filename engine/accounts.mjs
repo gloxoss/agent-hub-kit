@@ -87,9 +87,15 @@ function quotaFor(entry, rows) {
   const key = String(entry.quotaKey).toLowerCase();
   const matched = rows.filter((r) => String(r.provider ?? '').toLowerCase() === key || String(r.account ?? '').toLowerCase().includes(key));
   if (!matched.length) return null;
+  const modelOf = (r) => (entry.quotaModel && r.models ? r.models[entry.quotaModel] : undefined);
   const rem = (r) => {
-    if (entry.quotaModel && r.models && r.models[entry.quotaModel] !== undefined) return Number(r.models[entry.quotaModel]);
+    const m = modelOf(r);
+    if (m !== undefined && m !== null) return Number(typeof m === 'object' ? m.remaining : m);
     return r.remaining === null || r.remaining === undefined ? 1 : Number(r.remaining);
+  };
+  const resetOf = (r) => {
+    const m = modelOf(r);
+    return (m && typeof m === 'object' ? m.resetAt : null) ?? r.resetAt ?? null;
   };
   const blocked = (r) => (entry.quotaModel ? ['AUTH', 'DOWN', 'OFF'] : ['AUTH', 'OUT', 'DOWN', 'OFF', 'COOLDOWN']).includes(r.flag);
   const usable = matched.filter((r) => !blocked(r) && rem(r) >= 0.05);
@@ -97,7 +103,7 @@ function quotaFor(entry, rows) {
     const best = Math.max(...usable.map(rem));
     return { remaining: best, resetAt: null, flag: 'OK', detail: `${usable.length}/${matched.length} accounts usable, best ${best.toFixed(2)}` };
   }
-  const resets = matched.map((r) => r.resetAt).filter(Boolean).sort();
+  const resets = matched.map(resetOf).filter(Boolean).sort();
   return { remaining: Math.max(0, ...matched.map(rem)), resetAt: resets[0] ?? null, flag: 'OUT', detail: `all ${matched.length} accounts exhausted` };
 }
 
@@ -391,4 +397,35 @@ if (process.argv[1] && __filename === fs.realpathSync(process.argv[1])) {
       process.exit(1);
     }
   }
+}
+
+// Picker checks on a throwaway hub: per-model quota in both shapes, free first, exhausted last, owner's account last.
+export function runSelfTest() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'accounts-selftest-'));
+  try {
+    fs.mkdirSync(path.join(dir, 'runs'));
+    fs.copyFileSync(path.join(__dirname, 'accounts.example.json'), path.join(dir, 'accounts.json'));
+    const rows = [
+      { provider: 'antigravity', account: 'a@x', flag: 'OUT', remaining: 0, models: { Gemini: { remaining: 0.6, resetAt: null }, 'Claude and GPT models': 0 } },
+      { provider: 'antigravity', account: 'b@x', flag: 'OUT', remaining: 0, models: { Gemini: 0, 'Claude and GPT models': { remaining: 0, resetAt: '2999-01-01T00:00:00Z' } } },
+      { provider: 'codex', account: 'c@x', flag: 'OK', remaining: 0.8 },
+      { provider: 'claude', account: 'd@x', flag: 'OK', remaining: 0.84 },
+    ];
+    fs.writeFileSync(path.join(dir, 'runs', 'quota-cache.json'), JSON.stringify(rows));
+    const ids = (role) => pick({ role, hubDir: dir }).map((e) => e.id);
+    const orch = pick({ role: 'orchestrator', hubDir: dir });
+    const checks = [
+      ['free pool first, via per-model quota', orch[0].id === 'ag2-gemini' && orch[0].remaining === 0.6],
+      ['plan account second', orch[1].id === 'codex'],
+      ['exhausted pool flagged', orch.find((e) => e.id === 'ag2-sonnet').flag === 'OUT'],
+      ["owner's account last", orch[orch.length - 1].id === 'claude-user'],
+      ['responders are claude-family only', ids('responder').every((id) => id !== 'codex')],
+      ['old role names still match', rolesOf({ roles: ['worker', 'verifier'] }).has('builder') && rolesOf({ roles: ['worker', 'verifier'] }).has('reviewer')],
+      ['disabled and paid entries excluded', !ids('builder').includes('ds1') && !ids('builder').includes('cursor')],
+      ['cheap definition', isCheap({ cost: 'free' }) && isCheap({ cost: 0 }) && !isCheap({ cost: 'plan' })],
+    ];
+    let ok = true;
+    for (const [name, pass] of checks) { console.log(`${pass ? 'PASS' : 'FAIL'} accounts: ${name}`); ok = ok && pass; }
+    return ok;
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 }
