@@ -41,6 +41,7 @@ const REPLY_RULES = `Reply format (your final text is sent to the owner on Whats
 - First line: a one-line headline. Then a numbered list: "1. <task> | <who> | <minutes> | <state>".
 - Questions for the owner: a line "Decide:" then numbered questions, ending with "Reply: 1 yes 2 no".
 - When the owner wrote to you, ALWAYS answer in plain words (a greeting gets a short greeting back plus the one-line state of the fleet; a question gets the answer from the live data). Never reply NOOP to an owner message.
+- The "Fleet now" digest in your prompt is live and already lists what is running with tokens, cost and skills. For "what is running / what did it cost / status" questions answer from it FIRST, in a few lines; run extra commands only when it truly lacks the fact. You have 25 steps: never spend them all reading before you answer.
 - NOOP is only for turns that no owner message started and where nothing needs the owner.`;
 
 export function rules(cfg, entry) {

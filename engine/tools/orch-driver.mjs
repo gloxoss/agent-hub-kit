@@ -128,7 +128,14 @@ async function managerTurn({ events, owner }) {
       const notice = ownerClaudeNotice(entry, st);
       if (notice && !st.noticedOwnerClaude) { sendAuto(notice); st.noticedOwnerClaude = true; save(); }
       if (entry.owner !== 'user') st.noticedOwnerClaude = false;
-      const reply = extractReply(res.stdout, entry.family);
+      try { fs.writeFileSync(path.join(cfg.hubPath, 'runs', 'last-turn.jsonl'), String(res.stdout ?? '')); } catch { /* debugging aid only */ }
+      let reply = extractReply(res.stdout, entry.family);
+      // A manager that spent all its steps reading the hub never wrote the answer: ask once more, with no tools, from what it learned.
+      if ((!reply || /^NOOP\b/i.test(reply)) && owner.length) {
+        log(`${entry.id} gave no answer to the owner after ${stats.turns ?? '?'} step(s); asking for the answer now`);
+        const again = await runTurn(entry, `Answer the owner now in plain words, 3 to 8 short lines, using only what you already read plus this live digest. Run no more commands.\nOwner: ${owner.join(' | ')}\nFleet now:\n${digest(cfg)}`, { sid: fresh ? newId : sess.sid });
+        if (!failureOf(again)) reply = extractReply(again.stdout, entry.family);
+      }
       if (reply && !/^NOOP\b/i.test(reply)) { (owner.length ? sendReply : sendAuto)(reply); reporter.track(reply); }
       else if (owner.length) sendReply(`${entry.id} read your message but gave no answer, so nothing was changed. Ask again, or use /orch status, /orch quotas, /orch use <id>.`);
       return;
