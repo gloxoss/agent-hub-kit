@@ -130,7 +130,7 @@ async function managerTurn({ events, owner }) {
       if (entry.owner !== 'user') st.noticedOwnerClaude = false;
       const reply = extractReply(res.stdout, entry.family);
       if (reply && !/^NOOP\b/i.test(reply)) { (owner.length ? sendReply : sendAuto)(reply); reporter.track(reply); }
-      else if (owner.length) sendReply('Received. Nothing to change right now.');
+      else if (owner.length) sendReply(`${entry.id} read your message but gave no answer, so nothing was changed. Ask again, or use /orch status, /orch quotas, /orch use <id>.`);
       return;
     }
     // Nobody could take the turn: keep the work, tell the owner once per distinct outage.

@@ -40,7 +40,8 @@ const REPLY_RULES = `Reply format (your final text is sent to the owner on Whats
 - Plain text, no emoji, no filler, no greetings. Cite task IDs, commit hashes, worker names, numbers.
 - First line: a one-line headline. Then a numbered list: "1. <task> | <who> | <minutes> | <state>".
 - Questions for the owner: a line "Decide:" then numbered questions, ending with "Reply: 1 yes 2 no".
-- If nothing needs the owner, reply exactly: NOOP`;
+- When the owner wrote to you, ALWAYS answer in plain words (a greeting gets a short greeting back plus the one-line state of the fleet; a question gets the answer from the live data). Never reply NOOP to an owner message.
+- NOOP is only for turns that no owner message started and where nothing needs the owner.`;
 
 export function rules(cfg, entry) {
   const edits = isCheap(entry)
@@ -79,7 +80,7 @@ export function continuePrompt({ cfg, entry, events, owner = [], conversation = 
     block('Owner conversation while you were busy (verify against the fleet and correct anything wrong):', conversation),
     block('Owner messages:', owner),
     block('Events:', events),
-    `Handle these per the playbook. ${isCheap(entry) ? '' : 'You still do not edit code. '}Final text rules: plain, numbered, NOOP if nothing for the owner. Update docs/HANDOFF.md.`,
+    `Handle these per the playbook. ${isCheap(entry) ? '' : 'You still do not edit code. '}Final text rules: plain, numbered. If an owner message is listed above, answer it in words. NOOP only when there is no owner message and nothing for the owner. Update docs/HANDOFF.md.`,
   ].filter(Boolean).join('\n\n');
 }
 
