@@ -210,7 +210,7 @@ const run = (args) => {
   try { return execFileSync('node', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); }
   catch (e) { return `ERROR ${String(e.stderr || e.message).split('\n')[0]}`; }
 };
-const hub = (...a) => run([`${HUB}/hub.mjs`, ...a, '--agent', 'orchestrator']);
+const hub = (...a) => run([`${HUB}/hub.mjs`, ...a, '--agent', (CFG.orchestratorAgent || 'orchestrator')]);
 const load = () => { try { return JSON.parse(fs.readFileSync(STATE, 'utf8')); } catch { return { handled: {}, lastDigest: 0 }; } };
 // Retry-type keys expire after 30 min so a stuck task is retried instead of silently parked.
 const EXPIRE = /^(retry|queue|rework|resume|review):/;
@@ -277,12 +277,8 @@ const latest = (js, task, review, after) => js.filter((j) => j.task === task && 
 const nextOf = (list, cur) => list[(list.indexOf(cur) + 1) % list.length];
 
 function tick(st) {
-  console.log('TICK START');
-  console.log('CALLING tasks()');
   const T = tasks();
-  console.log('CALLING jobs()');
   const J = jobs();
-  console.log('AFTER jobs()');
   const once = (key, fn) => { if (!st.handled[key]) { st.handled[key] = Date.now(); fn(); } };
   const depsMet = (t) => t.deps.every((d) => (t.strict ? T[d]?.status === 'ACCEPTED' : BUILT.has(T[d]?.status)));
   const lastBuild = (t) => latest(J, t.id, false, 0);
@@ -592,9 +588,7 @@ function tick(st) {
 
   if (Date.now() - (st.lastCompact ?? 0) > 7 * 24 * 3600_000) {
     st.lastCompact = Date.now();
-    try { hub('compact'); } catch {}
   }
-  console.log('TICK END');
 }
 
 const st = prune(load());

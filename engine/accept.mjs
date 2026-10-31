@@ -21,7 +21,7 @@ if (!ROOT) {
 const CFG = (() => { try { return JSON.parse(fs.readFileSync(path.join(HUB, 'config.json'), 'utf8')); } catch { return {}; } })();
 
 const [,, id, note, media, msg] = process.argv;
-const hub = (...a) => execFileSync('node', [path.join(HUB, 'hub.mjs'), ...a, '--agent', 'orchestrator'], { encoding: 'utf8' });
+const hub = (...a) => execFileSync('node', [path.join(HUB, 'hub.mjs'), ...a, '--agent', (CFG.orchestratorAgent || 'orchestrator')], { encoding: 'utf8' });
 const t = JSON.parse(hub('show', id));
 
 function checksFor(taskId, customHub) {

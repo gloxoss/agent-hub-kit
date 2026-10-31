@@ -187,6 +187,7 @@ Orchestrator
   assign TASK --to AGENT | accept TASK --note N | reject TASK --note N
   edit TASK [--deps a,b] [--scope paths] [--title T] [--to AGENT] [--verify on|off] [--strict on|off] | cancel TASK --note N
   kick AGENT [--note N]       retire a closed worker session and release its claims
+  gc [--stale-min N]          retire every agent silent for N minutes (default 120) that holds no claim
 Worker
   next | claim TASK --files a,b | files TASK --add a,b | progress TASK --note N
   block TASK --note N | release TASK [--note N]
@@ -377,6 +378,16 @@ Exit codes: 0 ok, 1 usage or rule error, 3 conflict (file or task held by someon
     const held = Object.values(s.tasks).filter((t) => t.claimedBy === target).map((t) => t.id);
     fs.appendFileSync(EVENTS, JSON.stringify({ t: now(), type: 'leave', agent: target, by: me, note: opt.note ?? 'retired by orchestrator' }) + '\n');
     console.log(`${target} retired${held.length ? `; released ${held.join(', ')}` : ''}`);
+  },
+
+  // Agents that went silent long ago and hold nothing only clutter the board and the status line: retire them in one go.
+  gc() {
+    const s = state(); requireRole(s, 'orchestrator');
+    const mins = Number(opt['stale-min'] ?? 120);
+    const holders = new Set(Object.values(s.tasks).filter((t) => t.claimedBy).map((t) => t.claimedBy));
+    const idle = Object.values(s.agents).filter((a) => a.active && a.id !== me && a.role !== 'orchestrator' && ago(a.lastSeen) > mins && !holders.has(a.id)).map((a) => a.id);
+    for (const id of idle) fs.appendFileSync(EVENTS, JSON.stringify({ t: now(), type: 'leave', agent: id, by: me, note: `gc: silent for over ${mins} min` }) + '\n');
+    console.log(`gc: retired ${idle.length} idle agent(s)${idle.length ? ': ' + idle.slice(0, 8).join(', ') + (idle.length > 8 ? ', ...' : '') : ''}`);
   },
 
   cancel() {

@@ -324,7 +324,7 @@ function freeLane(busy) {
 }
 
 function hubCmd(args, quiet = false) {
-  const r = spawnSync(process.execPath, [path.join(HUB, 'hub.mjs'), ...args, '--agent', 'orchestrator'], { cwd: ROOT, encoding: 'utf8' });
+  const r = spawnSync(process.execPath, [path.join(HUB, 'hub.mjs'), ...args, '--agent', (CFG.orchestratorAgent || 'orchestrator')], { cwd: ROOT, encoding: 'utf8' });
   if (r.status !== 0 && !quiet) throw new Error(`hub ${args.join(' ')} failed: ${r.stderr || r.stdout}`);
   return r.stdout ?? '';
 }
