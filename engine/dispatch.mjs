@@ -434,16 +434,17 @@ function runner(logFile, spec, verdictFile) {
   });
   child.on('error', (err) => out.end(`\n[dispatch] error ${err.message}\n`));
   // Watchdog: a worker that outlives its wall-clock budget or goes silent is killed (exit 124) so it cannot sit in RAM for hours.
-  const maxMs = (CFG.resources?.maxJobMinutes ?? 90) * 60_000, silentMs = (CFG.resources?.maxSilenceMinutes ?? 20) * 60_000;
+  // HUB_MAX_JOB_MS / HUB_MAX_SILENCE_MS override the limits (used to test the watchdog in seconds).
+  const maxMs = Number(process.env.HUB_MAX_JOB_MS) || (CFG.resources?.maxJobMinutes ?? 90) * 60_000, silentMs = Number(process.env.HUB_MAX_SILENCE_MS) || (CFG.resources?.maxSilenceMinutes ?? 20) * 60_000;
   const started = Date.now();
   const dog = setInterval(() => {
     let quiet = 0; try { quiet = Date.now() - fs.statSync(logFile).mtimeMs; } catch { /* log not there yet */ }
-    const why = Date.now() - started > maxMs ? `over ${maxMs / 60000} min` : quiet > silentMs ? `silent for ${Math.round(quiet / 60000)} min` : null;
+    const why = Date.now() - started > maxMs ? `over ${Math.round(maxMs / 6000) / 10} min` : quiet > silentMs ? `silent for ${Math.round(quiet / 60000)} min` : null;
     if (!why) return;
     clearInterval(dog);
     out.write(`\n[dispatch] watchdog: ${why}, killing the worker\n`);
     try { process.kill(-child.pid, 'SIGKILL'); } catch { try { child.kill('SIGKILL'); } catch { /* already gone */ } }
-  }, 30_000);
+  }, Math.max(500, Math.min(30_000, Math.floor(silentMs / 3))));
   child.on('close', () => clearInterval(dog));
 }
 
