@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { isCheap } from '../accounts.mjs';
 import { burnStats, burnLine } from './burn.mjs';
+import { runningLines } from './jobs-view.mjs';
 
 const KIT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 export const PLAYBOOK = path.join(KIT, 'engine', 'ORCHESTRATOR.md');
@@ -18,9 +19,9 @@ const run = (cmd, args, cwd, ms = 15_000) => {
 export function digest(cfg) {
   const hub = cfg.hubPath;
   const lines = [];
-  const list = run(process.execPath, [path.join(hub, 'dispatch.mjs'), 'list'], cfg.root);
-  const running = list.split('\n').filter((l) => /\sRUNNING\s*$/.test(l)).map((l) => l.trim().split(/\s+/));
-  lines.push(`Running (${running.length}): ${running.slice(0, 8).map((r) => `${r[2] ?? '?'} on ${r[1] ?? '?'}`).join('; ') || 'nothing'}`);
+  const jobs = runningLines(hub, cfg.root);
+  lines.push(jobs.length ? `Running (${jobs.length}):` : 'Running (0): nothing');
+  lines.push(...jobs);
   const status = run(process.execPath, [path.join(hub, 'hub.mjs'), 'status'], cfg.root);
   const tasks = status.split('\n').find((l) => l.startsWith('tasks:'));
   if (tasks) lines.push(tasks.trim());
