@@ -314,7 +314,18 @@ function tick(st) {
   st.down ??= {};
   const up = (ex) => !st.down[ex] || Date.now() - st.down[ex] > DOWN_MS;
   // Healthy-first: skip the reviewer that just failed, and rotate the shared reviewers when the first is down.
+  // When no independent reviewer is up (for example the only other lane hit its usage limit), reviews must not stall:
+  // the builder's own executor reviews in a fresh read-only session. Turn off with "reviewSameExecutorFallback": false.
   const reviewer = (failed, builder) => {
+    const independent = reviewerIndependent(failed, builder);
+    if (independent) return independent;
+    if ((CFG.reviewSameExecutorFallback ?? true) && builder && builder !== failed && up(builder) && enabled(builder)) {
+      say(`REVIEW-FALLBACK: no independent reviewer is available, ${builder} reviews in a fresh read-only session`);
+      return builder;
+    }
+    return null;
+  };
+  const reviewerIndependent = (failed, builder) => {
     const exclude = [failed, builder, ...Object.keys(st.down || {}).filter((e) => !up(e))].filter(Boolean);
     const picked = getPickedList('reviewer', exclude);
     const ok = (e) => e !== failed && e !== builder && up(e);
