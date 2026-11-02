@@ -84,7 +84,11 @@ export async function runCommand(text, ctx) {
     case 'resume': {
       writeControl(cfg, { paused: false });
       const wasHeld = st.burn?.tripped;
-      if (wasHeld) { st.burn = { tripped: false, clearedAt: new Date().toISOString() }; save(); ctx.resumeDispatch?.(); }
+      if (wasHeld) {
+        st.burn = { tripped: false, clearedAt: new Date().toISOString() }; save();
+        try { fs.unlinkSync(path.join(cfg.hubPath, 'runs', 'burn-hold.json')); } catch { /* already released */ }
+        ctx.resumeDispatch?.();
+      }
       return `Resumed${wasHeld ? ' and dispatching is back on' : ''}. On duty: ${ranked[0]?.id ?? 'none available'}.`;
     }
     case 'reset': st.down = {}; st.downWhy = {}; for (const s of Object.values(st.sessions ?? {})) delete s.downUntil; save(); return 'All managers marked ready again.';

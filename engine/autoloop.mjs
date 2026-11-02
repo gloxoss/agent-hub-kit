@@ -205,7 +205,19 @@ function maybeEmitResource(msg) {
     } catch {}
   }
 }
+// The quota-burn breaker holds NEW BUILDS only (reviews and accepts must keep running or the backlog can never clear).
+// The hold releases itself after the first accept since it tripped, or after burnHoldMinutes.
+const HOLD_FILE = `${HUB}/runs/burn-hold.json`;
+const readHold = () => { try { return JSON.parse(fs.readFileSync(HOLD_FILE, 'utf8')); } catch { return null; } };
+let REVIEW_BACKLOG = 0;   // tasks waiting for a review verdict; refreshed every tick
 const run = (args) => {
+  if (args[0].endsWith('dispatch.mjs') && args[1] === 'run' && !DRY) {
+    const last = String(args[args.length - 1]);
+    const hold = readHold();
+    if (hold) { say(`HELD build ${last}: ${hold.why}`); return ''; }
+    const cap = CFG.maxReviewBacklog ?? 8;
+    if (REVIEW_BACKLOG >= cap) { say(`WAIT build ${last}: ${REVIEW_BACKLOG} tasks are waiting for review (limit ${cap}); reviews go first`); return ''; }
+  }
   if (DRY && !(args[0].endsWith('dispatch.mjs') && args[1] === 'list')) { say(`DRY ${args.join(' ')}`); return ''; }
   try { return execFileSync('node', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); }
   catch (e) {
@@ -282,6 +294,19 @@ const nextOf = (list, cur) => list[(list.indexOf(cur) + 1) % list.length];
 
 function tick(st) {
   const T = tasks();
+  REVIEW_BACKLOG = Object.values(T).filter((t) => t.status === 'REVIEW').length;
+  const hold = readHold();
+  if (hold) {
+    const accepted = Object.values(T).filter((t) => t.status === 'ACCEPTED').length;
+    if (hold.acceptedAtTrip === undefined) { try { fs.writeFileSync(HOLD_FILE, JSON.stringify({ ...hold, acceptedAtTrip: accepted })); } catch { /* retry next tick */ } }
+    else {
+      const ageMin = (Date.now() - Date.parse(hold.at)) / 60000;
+      if (accepted > hold.acceptedAtTrip || ageMin >= (CFG.burnHoldMinutes ?? 45)) {
+        try { fs.unlinkSync(HOLD_FILE); } catch { /* already gone */ }
+        say(`BURN-RELEASED after ${Math.round(ageMin)} min (${accepted - hold.acceptedAtTrip} task(s) accepted since the hold)`);
+      }
+    }
+  }
   const J = jobs();
   const once = (key, fn) => { if (!st.handled[key]) { st.handled[key] = Date.now(); fn(); } };
   const depsMet = (t) => t.deps.every((d) => (t.strict ? T[d]?.status === 'ACCEPTED' : BUILT.has(T[d]?.status)));

@@ -178,6 +178,13 @@ try {
 
     hubCmd('orchestrator', 'add', 'K-normal', '--phase', 'build', '--title', 'normal task', '--scope', 'src/demo.ts');
 
+    // This step tests the migration lock, not the RAM floor: switch the floor off in the scratch hub so a small test machine does not mask it.
+    try {
+      const cfgFile = path.join(tmp, '.agent-hub', 'config.json');
+      const scratchCfg = JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
+      scratchCfg.resources = { ...(scratchCfg.resources ?? {}), buildMinFreeMB: 0, reviewMinFreeMB: 0 };
+      fs.writeFileSync(cfgFile, JSON.stringify(scratchCfg, null, 2));
+    } catch { /* keep the default config */ }
     const r1 = spawnSync(process.execPath, [path.join(tmp, '.agent-hub', 'dispatch.mjs'), 'run', 'opencode', 'builder-1', 'K-normal'], { cwd: tmp, encoding: 'utf8' });
     const out1 = `${r1.stdout ?? ''}${r1.stderr ?? ''}`;
     if (!out1.includes('not dispatched: migration lock (M-test)')) {

@@ -15,7 +15,7 @@ export function inQuietHours(range, now = new Date()) {
   return a <= b ? cur >= a && cur < b : cur >= a || cur < b;   // 23:00-08:00 wraps midnight
 }
 
-export function createReporter({ cfg, st, save, sendAuto, isIdle }) {
+export function createReporter({ cfg, st, save, sendAuto, isIdle, why = () => '' }) {
   const o = cfg.orchestrator;
   return {
     // Call every minute. Sends at most one message per call.
@@ -46,14 +46,17 @@ export function createReporter({ cfg, st, save, sendAuto, isIdle }) {
       rep.quietNoticeFor = null;
       // 3. Change report at most every reportEveryMinutes, only if the fleet changed.
       if (key !== rep.key && now - rep.lastAt >= (o.reportEveryMinutes ?? 15) * MIN) {
-        rep.key = key; rep.lastAt = now; rep.heartbeatAt = now; save();
+        rep.key = key; rep.lastAt = now; rep.heartbeatAt = now; rep.hbRepeat = 0; save();
         sendAuto(`Fleet update\n${text}`);
         return 'report';
       }
       // 4. Hourly heartbeat when nothing changed.
-      if (now - rep.heartbeatAt >= (o.heartbeatMinutes ?? 60) * MIN) {
-        rep.heartbeatAt = now; save();
-        sendAuto(`No change in the last hour.\n${text}${isIdle() ? '\nNothing is running; reply with a task to start work.' : ''}`);
+      // Two identical heartbeats are enough; after that the same line only repeats every heartbeatBackoffMinutes (default 6 h).
+      const gap = (rep.hbRepeat ?? 0) >= 2 ? (o.heartbeatBackoffMinutes ?? 360) : (o.heartbeatMinutes ?? 60);
+      if (now - rep.heartbeatAt >= gap * MIN) {
+        rep.heartbeatAt = now; rep.hbRepeat = (rep.hbRepeat ?? 0) + 1; save();
+        const reason = why();
+        sendAuto(`No change in the last hour.\n${text}${reason ? `\n${reason}` : isIdle() ? '\nNothing is running; reply with a task to start work.' : ''}`);
         return 'heartbeat';
       }
       return null;

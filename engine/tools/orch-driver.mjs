@@ -75,7 +75,7 @@ const queue = [];        // system events waiting for the manager
 const ownerQueue = [];   // owner messages waiting for the manager
 const history = [];      // owner <-> side-responder conversation to hand to the manager
 const quotaBurst = [];
-const reporter = createReporter({ cfg, st, save, sendAuto, isIdle: () => !busy && /Running \(0\)/.test(digest(cfg)) });
+const reporter = createReporter({ cfg, st, save, sendAuto, isIdle: () => !busy && /Running \(0\)/.test(digest(cfg)), why: () => (st.burn?.tripped ? `New builds are held: ${st.burn.why} They restart after the first accepted task or after 45 minutes.` : '') });
 
 // Side responder: answers the owner at once while the manager is busy. Read-only (edit tools denied for every responder).
 async function respondWhileBusy(text) {
@@ -183,7 +183,7 @@ async function main() {
   for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => process.exit(0));
 
   log(`driver up for ${cfg.projectName} on ${cfg.nodeName}`);
-  intake = new EventIntake(cfg, { autoloop: !noAutoloop, whatsapp: !noWa }).start({ holdAutoloop: Boolean(st.burn?.tripped) });
+  intake = new EventIntake(cfg, { autoloop: !noAutoloop, whatsapp: !noWa }).start({ holdAutoloop: false });
   if (st.burn?.tripped) log(`dispatching stays held from before the restart: ${st.burn.why}`);
   intake.on('wake', (ev) => {
     if (ev.wakeClass === 'user') return onOwner(ownerText(ev.line));
@@ -198,16 +198,23 @@ async function main() {
   // Quota-burn breaker: many jobs and nothing accepted means allowance is draining without progress. Hold dispatch, tell the owner why.
   setInterval(() => {
     try {
+      const holdFile = path.join(cfg.hubPath, 'runs', 'burn-hold.json');
+      if (st.burn?.tripped && !fs.existsSync(holdFile)) {
+        delete st.burn; save();
+        log('burn hold released');
+        sendAuto('New builds are running again: a task was accepted, or the hold timed out. Reviews and accepting never stopped.');
+        return;
+      }
       if (st.burn?.tripped || noAutoloop) return;
       const lim = burnLimits(cfg);
       const verdict = burnVerdict(burnStats(cfg.hubPath, lim.windowMinutes), lim);
       if (!verdict) return;
       if (verdict.kind === 'no-progress') {
-        intake?.pauseAutoloop();
         st.burn = { tripped: true, at: new Date().toISOString(), why: verdict.why };
+        try { fs.writeFileSync(path.join(cfg.hubPath, 'runs', 'burn-hold.json'), JSON.stringify({ tripped: true, at: st.burn.at, why: verdict.why })); } catch (e) { log(`could not write the hold file: ${e.message}`); }
         save();
         log(`burn breaker tripped: ${verdict.why}`);
-        sendAuto(`Dispatching is paused to protect your quota.\n${verdict.why}\nRunning workers finish; nothing new starts. Check why nothing is being accepted, then send /orch resume.`);
+        sendAuto(`New builds are paused to protect your quota.\n${verdict.why}\nReviews and accepting keep running. Builds start again by themselves after the first accepted task or in 45 minutes, or send /orch resume.`);
       } else if (st.burn?.loopKey !== verdict.why) {
         st.burn = { ...(st.burn ?? {}), loopKey: verdict.why };
         save();
