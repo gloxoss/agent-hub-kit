@@ -7,8 +7,9 @@ import { loadAccounts, pick } from '../accounts.mjs';
 import { isDown, turnsInLastHour, candidates } from './select.mjs';
 import { burnStats, burnLimits, burnVerdict, burnLine } from './burn.mjs';
 import { actionsOf } from './trace.mjs';
+import { runningJobs } from './jobs-view.mjs';
 
-const HELP = 'Commands: /orch status | last | quotas | burn | use <id> | order <id,id,...|default> | pause | resume | reset | models | shot <route>';
+const HELP = 'Commands: /orch status | running | log <task> | stop <task> | first <task> | last | quotas | burn | use <id> | order <id,id,...|default> | pause | resume | reset | models | shot <route>';
 const hhmm = (t) => new Date(t).toTimeString().slice(0, 5);
 
 export function controlFile(cfg) { return path.join(cfg.hubPath, 'orch-control.json'); }
@@ -54,6 +55,43 @@ export async function runCommand(text, ctx) {
         `Manager turns in the last hour: ${turnsInLastHour(st)} (limit ${cfg.orchestrator.maxTurnsPerHour} for automatic wakes; your messages always get answered)`,
         'Order:', ...lines, HELP,
       ].join('\n');
+    }
+    case 'running': {
+      const jobs = runningJobs(cfg.hubPath, cfg.root);
+      if (!jobs.length) return '*Nothing is running right now.*\n• Send /orch status to see why, or tell me a task.';
+      return [`*${jobs.length} running now*`, '', ...jobs.map((j) => `• ${j.taskId}: ${j.mode === 'review' ? 'review' : 'work'} on ${j.executor}, ${j.minutes} min`), '', '_/orch log <task> to look inside, /orch stop <task> to stop one._'].join('\n');
+    }
+    case 'log': {
+      if (!arg) return 'Usage: /orch log <task name or part of it>';
+      const rows = runningJobs(cfg.hubPath, cfg.root).filter((j) => j.taskId.includes(arg));
+      let file = rows[0]?.log;
+      if (!file) {
+        try {
+          const all = fs.readFileSync(path.join(cfg.hubPath, 'runs', 'jobs.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((j) => j.taskId.includes(arg));
+          file = all.at(-1)?.log;
+        } catch { /* no jobs file */ }
+      }
+      if (!file) return `No job found for "${arg}".`;
+      let raw = '';
+      try { raw = fs.readFileSync(path.resolve(cfg.root, file), 'utf8').slice(-400_000); } catch { return 'The log file is not readable.'; }
+      const acts = actionsOf(raw, 8);
+      const state = raw.match(/\[dispatch\] (exit \S+|watchdog[^\n]*)/g)?.slice(-1)[0] ?? 'still running';
+      return [`*${arg}: ${state.replace('[dispatch] ', '')}*`, '', ...(acts.length ? acts.map((x) => `• ${x}`) : ['• no commands yet, it is still reading']), '', '_Full log on the server: ' + file + '_'].join('\n');
+    }
+    case 'stop': {
+      if (!arg) return 'Usage: /orch stop <task name or part of it>';
+      const rows = runningJobs(cfg.hubPath, cfg.root).filter((j) => j.taskId.includes(arg));
+      if (!rows.length) return `Nothing running matches "${arg}".`;
+      if (rows.length > 1) return `More than one matches: ${rows.map((j) => j.taskId).join(', ')}. Be more specific.`;
+      const j = rows[0];
+      try { process.kill(-Number(j.pid), 'SIGTERM'); } catch { try { process.kill(Number(j.pid), 'SIGTERM'); } catch { /* already gone */ } }
+      spawnSync(process.execPath, [path.join(cfg.hubPath, 'hub.mjs'), 'kick', j.agentId ?? '', '--note', 'stopped by the owner', '--agent', cfg.orchestratorAgent ?? 'orchestrator-1'], { cwd: cfg.root, encoding: 'utf8' });
+      return `*Stopped ${j.taskId}.*\n• The work done so far stays in the files.\n• Tell me what to do next, or it is picked up again by the loop.`;
+    }
+    case 'first': {
+      if (!arg) return 'Usage: /orch first <task name or part of it>';
+      writeControl(cfg, { first: arg });
+      return `*Noted: ${arg} goes first.*\n• It is the next one dispatched when a slot is free.\n• Running work is not interrupted. Use /orch stop for that.`;
     }
     case 'last': {
       // What the manager really did in its latest run, read from the saved run, not from its own words.

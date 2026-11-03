@@ -210,13 +210,24 @@ function maybeEmitResource(msg) {
 const HOLD_FILE = `${HUB}/runs/burn-hold.json`;
 const readHold = () => { try { return JSON.parse(fs.readFileSync(HOLD_FILE, 'utf8')); } catch { return null; } };
 let REVIEW_BACKLOG = 0;   // tasks waiting for a review verdict; refreshed every tick
+let TASK_STATUS = {};     // task id -> status, refreshed every tick
 const run = (args) => {
   if (args[0].endsWith('dispatch.mjs') && args[1] === 'run' && !DRY) {
     const last = String(args[args.length - 1]);
     const hold = readHold();
     if (hold) { say(`HELD build ${last}: ${hold.why}`); return ''; }
+    // The owner said "this one first" (/orch first): other new builds wait until it has started.
+    try {
+      const first = JSON.parse(fs.readFileSync(`${HUB}/orch-control.json`, 'utf8')).first;
+      if (first && !last.includes(first) && TASK_STATUS && Object.keys(TASK_STATUS).some((id) => id.includes(first) && ['OPEN', 'ASSIGNED', 'REWORK'].includes(TASK_STATUS[id]))) {
+        say(`WAIT build ${last}: the owner asked for ${first} to go first`); return '';
+      }
+      if (first && last.includes(first)) { const f = JSON.parse(fs.readFileSync(`${HUB}/orch-control.json`, 'utf8')); delete f.first; fs.writeFileSync(`${HUB}/orch-control.json`, JSON.stringify(f, null, 2)); }
+    } catch { /* no control file */ }
     const cap = CFG.maxReviewBacklog ?? 8;
-    if (REVIEW_BACKLOG >= cap) { say(`WAIT build ${last}: ${REVIEW_BACKLOG} tasks are waiting for review (limit ${cap}); reviews go first`); return ''; }
+    // Only brand-new work waits for the review queue. A task sent back with findings (REWORK) is already known work,
+    // and it must never be blocked by a queue that cannot drain (for example when every reviewer is at its limit).
+    if (REVIEW_BACKLOG >= cap && TASK_STATUS[last] !== 'REWORK') { say(`WAIT build ${last}: ${REVIEW_BACKLOG} tasks are waiting for review (limit ${cap}); reviews go first`); return ''; }
   }
   if (DRY && !(args[0].endsWith('dispatch.mjs') && args[1] === 'list')) { say(`DRY ${args.join(' ')}`); return ''; }
   try { return execFileSync('node', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); }
@@ -295,6 +306,7 @@ const nextOf = (list, cur) => list[(list.indexOf(cur) + 1) % list.length];
 function tick(st) {
   const T = tasks();
   REVIEW_BACKLOG = Object.values(T).filter((t) => t.status === 'REVIEW').length;
+  TASK_STATUS = Object.fromEntries(Object.values(T).map((t) => [t.id, t.status]));
   const hold = readHold();
   if (hold) {
     const accepted = Object.values(T).filter((t) => t.status === 'ACCEPTED').length;
