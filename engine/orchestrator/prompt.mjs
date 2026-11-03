@@ -36,13 +36,13 @@ export function digest(cfg) {
   return lines.join('\n');
 }
 
-const REPLY_RULES = `Reply format (your final text is sent to the owner on WhatsApp by the driver; do NOT call wa send for it):
-- Plain text, no emoji, no filler, no greetings. Cite task IDs, commit hashes, worker names, numbers.
-- First line: a one-line headline. Then a numbered list: "1. <task> | <who> | <minutes> | <state>".
-- Questions for the owner: a line "Decide:" then numbered questions, ending with "Reply: 1 yes 2 no".
-- When the owner wrote to you, ALWAYS answer in plain words (a greeting gets a short greeting back plus the one-line state of the fleet; a question gets the answer from the live data). Never reply NOOP to an owner message.
-- The "Fleet now" digest in your prompt is live and already lists what is running with tokens, cost and skills. For "what is running / what did it cost / status" questions answer from it FIRST, in a few lines; run extra commands only when it truly lacks the fact. You have 25 steps: never spend them all reading before you answer.
-- NOOP is only for turns that no owner message started and where nothing needs the owner.`;
+const REPLY_RULES = `How to write to the owner (your final text is sent on WhatsApp by the driver; do NOT call wa send for it):
+- Plain words, short sentences, like a calm colleague. No emoji, no greetings, no jargon. The owner reads on a phone and dislikes reports.
+- When the owner wrote to you, ANSWER THEIR MESSAGE. Their latest message decides the topic, even if work is running or you were just talking about something else. If they change the subject, follow the new subject. Never answer a question with a task list unless they asked for status.
+- Task ids, worker names, tokens, hours and commit text appear only if the owner asked for them.
+- If you cannot do what they ask (for example a screenshot, because this server has no browser), say that in one sentence and offer the nearest thing you can do (a plain description, the page address, or what to run on their PC). Never ignore a request.
+- If you need an answer from them, end with: "Decide:" then numbered questions, then "Reply: 1 yes 2 no". Do not write "Decide: none".
+- Turns started by an event (no owner message) stay silent (reply exactly NOOP) unless something changed that the owner must know.`;
 
 export function rules(cfg, entry) {
   const edits = isCheap(entry)
@@ -66,10 +66,11 @@ export function bootstrapPrompt({ cfg, entry, events, owner = [], conversation =
   return [
     rules(cfg, entry),
     takeover ? `You take over from ${takeover}. Read docs/HANDOFF.md first.` : null,
-    `Fleet now:\n${digest(cfg)}`,
+    owner.length ? block('The owner just wrote (answer this first, it decides the topic):', owner) : null,
+    `Fleet now (background; use it only if the owner asks about status):\n${digest(cfg)}`,
     block('Owner conversation while you were busy (answered by the side responder; verify against the fleet and correct anything wrong):', conversation),
     corrections.length ? `Corrections to send first:\n${corrections.join('\n')}` : null,
-    block('Owner messages:', owner),
+    owner.length ? null : block('Owner messages:', owner),
     block('Events:', events),
   ].filter(Boolean).join('\n\n');
 }
@@ -77,11 +78,11 @@ export function bootstrapPrompt({ cfg, entry, events, owner = [], conversation =
 // Later turns of the same session: only what changed.
 export function continuePrompt({ cfg, entry, events, owner = [], conversation = [] }) {
   return [
-    `Fleet now:\n${digest(cfg)}`,
+    owner.length ? block('The owner just wrote (answer this first, it decides the topic):', owner) : null,
+    `Fleet now (background; use it only if the owner asks about status):\n${digest(cfg)}`,
     block('Owner conversation while you were busy (verify against the fleet and correct anything wrong):', conversation),
-    block('Owner messages:', owner),
     block('Events:', events),
-    `Handle these per the playbook. ${isCheap(entry) ? '' : 'You still do not edit code. '}Final text rules: plain, numbered. If an owner message is listed above, answer it in words. NOOP only when there is no owner message and nothing for the owner. Update docs/HANDOFF.md.`,
+    `Handle these per the playbook. ${isCheap(entry) ? '' : 'You still do not edit code. '}Write to the owner in plain words as the rules say. If an owner message is listed above, answer that message first; reply NOOP only when there is no owner message and nothing the owner must know.`,
   ].filter(Boolean).join('\n\n');
 }
 
@@ -104,7 +105,7 @@ export function runSelfTest() {
   const checks = [
     ['costly never edits', a.includes('NEVER write or edit project code')],
     ['cheap may edit', b.includes('may make small edits')],
-    ['events listed', a.includes('1. DECIDE T-1: x') && a.includes('Owner messages:')],
+    ['events listed', a.includes('1. DECIDE T-1: x') && a.includes('The owner just wrote')],
     ['reply rules', a.includes('NOOP') && a.includes('Decide:')],
     ['no project leak', !new RegExp(['lan', 'go|Oss', 'ama|/home/dev/proj', 'ects'].join('')).test(a + b)],
     ['responder read-only', responderPrompt({ cfg, ownerText: 'hi' }).includes('Read-only')],
