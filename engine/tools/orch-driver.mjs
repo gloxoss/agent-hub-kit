@@ -114,6 +114,7 @@ async function managerTurn({ events, owner }) {
       }
       let res = await runTurn(entry, prompt, fresh ? { id: newId } : { sid: sess.sid });
       let fail = failureOf(res);
+      if (fail) { try { fs.writeFileSync(path.join(cfg.hubPath, 'runs', 'last-failed-turn.txt'), `prompt chars: ${prompt.length}\nexit: ${res.exitCode}\nerror: ${res.error ?? ''}\n--- stderr\n${String(res.stderr ?? '').slice(-3000)}\n--- stdout tail\n${String(res.stdout ?? '').slice(-4000)}`); } catch { /* debugging aid only */ } }
       if (fail && usesProxy(entry)) {
         const px = await proxyStatus();
         log(`${entry.id} turn failed (${fail.reason}); stderr: ${String(res.stderr ?? '').replace(/\s+/g, ' ').trim().slice(-300) || '(empty)'}; proxy: ${px.up ? `${px.available}/${px.total} accounts usable` : 'not answering'}`);
