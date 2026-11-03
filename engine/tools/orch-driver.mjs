@@ -65,8 +65,13 @@ function wa(args) {
   if (toTerminal || noWa || DRY || !fs.existsSync(WA)) return;
   spawnSync(process.execPath, [WA, ...args], { cwd: cfg.root, env: { ...process.env, AGENT_PROJECT: cfg.projectName }, timeout: 60_000, windowsHide: true });
 }
-const sendReply = (text) => (toTerminal ? console.log(text) : wa(['send', text]));
-const sendAuto = (text) => (toTerminal ? console.log(text) : wa(['send', '--auto', text]));
+// Web console: every agent message is also logged for it; a message that came from the console is answered there, not on WhatsApp.
+let channel = 'wa';
+const WEB_IN = path.join(cfg.hubPath, 'runs', 'web-inbox.jsonl');
+const WEB_OUT = path.join(cfg.hubPath, 'runs', 'web-chat.jsonl');
+const webLog = (role, text) => { try { fs.mkdirSync(path.dirname(WEB_OUT), { recursive: true }); fs.appendFileSync(WEB_OUT, JSON.stringify({ t: Date.now(), role, text }) + '\n'); } catch { /* console is optional */ } };
+const sendReply = (text) => { webLog('agent', text); if (toTerminal) console.log(text); else if (channel !== 'web') wa(['send', text]); };
+const sendAuto = (text) => { webLog('agent', text); if (toTerminal) console.log(text); else wa(['send', '--auto', text]); };
 const sendImage = (file, caption) => wa(['image', file, caption]);
 
 let intake = null;
@@ -102,7 +107,10 @@ async function managerTurn({ events, owner }) {
   try {
     for (const entry of candidates({ role: 'orchestrator', st, hubDir: cfg.hubPath, control: control() })) {
       const sess = st.sessions[entry.id] ?? {};
-      const fresh = !sess.sid || shouldRotate({ currentTokens: sess.contextTokens ?? 0, turns: sess.turns ?? 0 }, o.rotate).shouldRotate;
+      // Gemini sessions carry saved internal data that the proxy rejects when a session is resumed (exit 1, "unrecognized_model").
+      // A fresh session per turn is slightly bigger but always works, so Gemini never resumes.
+      const geminiNoResume = usesProxy(entry) && /gemini/i.test(String(entry.model ?? entry.id ?? ''));
+      const fresh = geminiNoResume || !sess.sid || shouldRotate({ currentTokens: sess.contextTokens ?? 0, turns: sess.turns ?? 0 }, o.rotate).shouldRotate;
       const convo = history.splice(0);
       const takeover = st.current && st.current !== entry.id ? st.current : null;
       const prompt = fresh ? bootstrapPrompt({ cfg, entry, events, owner, conversation: convo, takeover }) : continuePrompt({ cfg, entry, events, owner, conversation: convo });
@@ -158,7 +166,17 @@ async function managerTurn({ events, owner }) {
         const again = await runTurn(entry, `Answer the owner now in plain words, 3 to 8 short lines, using only what you already read plus this live digest. Run no more commands.\nOwner: ${owner.join(' | ')}\nFleet now:\n${digest(cfg)}`, { sid: fresh ? newId : sess.sid });
         if (!failureOf(again)) reply = extractReply(again.stdout, entry.family);
       }
-      if (reply && !/^NOOP\b/i.test(reply)) { (owner.length ? sendReply : sendAuto)(owner.length ? reply + traceBlock(res.stdout) : reply); reporter.track(reply); }
+      if (reply && !/^NOOP\b/i.test(reply)) {
+        (owner.length ? sendReply : sendAuto)(owner.length ? reply + traceBlock(res.stdout) : reply);
+        reporter.track(reply);
+        // A report the manager wrote as a document is delivered as a file, not left on the server.
+        if (owner.length && !toTerminal && channel !== 'web') {
+          const written = [...String(res.stdout ?? '').matchAll(/"file_path":"([^"]+\.(?:md|pdf|html))"/g)].map((m) => m[1].replace(/\\\\/g, '/'));
+          const doc = written.filter((p) => !/HANDOFF/i.test(p)).at(-1);
+          const abs = doc && (path.isAbsolute(doc) ? doc : path.join(cfg.root, doc));
+          if (abs && fs.existsSync(abs)) wa(['file', abs, `Report: ${path.basename(abs)}`]);
+        }
+      }
       else if (owner.length) sendReply(`${entry.id} read your message but gave no answer, so nothing was changed. Ask again, or use /orch status, /orch quotas, /orch use <id>.`);
       return;
     }
@@ -208,7 +226,7 @@ async function main() {
   intake = new EventIntake(cfg, { autoloop: !noAutoloop, whatsapp: !noWa }).start({ holdAutoloop: false });
   if (st.burn?.tripped) log(`dispatching stays held from before the restart: ${st.burn.why}`);
   intake.on('wake', (ev) => {
-    if (ev.wakeClass === 'user') return onOwner(ownerText(ev.line));
+    if (ev.wakeClass === 'user') { channel = 'wa'; return onOwner(ownerText(ev.line)); }
     if (ev.wakeClass === 'quota') {   // autoloop already moves work on a lane quota hit; wake only on a burst
       quotaBurst.push(ev.at); while (quotaBurst.length && ev.at - quotaBurst[0] > 30 * 60_000) quotaBurst.shift();
       if (quotaBurst.length >= 5) { quotaBurst.length = 0; queue.push('QUOTA burst: five lane quota failures in 30 minutes; check allowance and lanes.'); }
@@ -217,6 +235,17 @@ async function main() {
     if (['decide', 'sync', 'start'].includes(ev.wakeClass)) queue.push(ev.line);
   });
   setInterval(() => tick().catch((e) => log(`tick error: ${e.message}`)), 20_000);
+  // Messages typed in the web console arrive as lines in runs/web-inbox.jsonl; the read position survives restarts.
+  st.webOffset ??= (() => { try { return fs.statSync(WEB_IN).size; } catch { return 0; } })();
+  setInterval(() => {
+    try {
+      const size = fs.statSync(WEB_IN).size;
+      if (size <= st.webOffset) return;
+      const fd = fs.openSync(WEB_IN, 'r'); const buf = Buffer.alloc(size - st.webOffset); fs.readSync(fd, buf, 0, buf.length, st.webOffset); fs.closeSync(fd);
+      st.webOffset = size; save();
+      for (const line of buf.toString('utf8').split('\n').filter(Boolean)) { const m = JSON.parse(line); if (m.text) { channel = 'web'; onOwner(m.text); } }
+    } catch { /* no console messages yet */ }
+  }, 2000);
   // Quota-burn breaker: many jobs and nothing accepted means allowance is draining without progress. Hold dispatch, tell the owner why.
   setInterval(() => {
     try {
