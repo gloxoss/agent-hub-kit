@@ -229,7 +229,7 @@ const run = (args) => {
 const hub =(...a) => run([`${HUB}/hub.mjs`, ...a, '--agent', (CFG.orchestratorAgent || 'orchestrator')]);
 const load = () => { try { return JSON.parse(fs.readFileSync(STATE, 'utf8')); } catch { return { handled: {}, lastDigest: 0 }; } };
 // Retry-type keys expire after 30 min so a stuck task is retried instead of silently parked.
-const EXPIRE = /^(retry|queue|rework|resume|review):/;
+const EXPIRE = /^(retry|queue|rework|resume|review|accept|blocked-review):/;
 const prune = (s) => { for (const [k, at] of Object.entries(s.handled)) if (EXPIRE.test(k) && Date.now() - at > (k.startsWith('queue:') ? (CFG.queueRetryMinutes ?? 10) : 30) * 60_000) delete s.handled[k]; return s; };
 const save = (s) => DRY || fs.writeFileSync(STATE, JSON.stringify(s, null, 1));
 
@@ -319,7 +319,7 @@ function tick(st) {
   const reviewer = (failed, builder) => {
     const independent = reviewerIndependent(failed, builder);
     if (independent) return independent;
-    if ((CFG.reviewSameExecutorFallback ?? true) && builder && builder !== failed && up(builder) && enabled(builder)) {
+    if ((CFG.reviewSameExecutorFallback ?? false) && builder && builder !== failed && up(builder) && enabled(builder)) {
       say(`REVIEW-FALLBACK: no independent reviewer is available, ${builder} reviews in a fresh read-only session`);
       return builder;
     }
@@ -410,7 +410,14 @@ function tick(st) {
 
   for (const t of Object.values(T)) {
     if (t.status === 'REVIEW') {
-      const r = latest(J, t.id, true, t.doneAt - 5_000);
+      let r = latest(J, t.id, true, t.doneAt - 5_000);
+      if (r && r.executor && r.executor === builderOf(t.id)) {
+        // Acceptance refuses self-review (nobody grades their own work), so this verdict can never be used.
+        const rv = reviewerIndependent(undefined, builderOf(t.id));
+        if (rv) once(`review:${t.id}:${t.doneAt}:${Math.floor(Date.now() / 600_000)}`, () => run([`${HUB}/dispatch.mjs`, 'review', t.id, rv]));
+        else once(`blocked-review:${t.id}`, () => say(`BLOCKED-REVIEW ${t.id}: reviewed by its own builder (${r.executor}); no independent reviewer is available (${Object.keys(st.down || {}).filter((e) => !up(e)).join(', ') || 'none marked down'} cooling down, others at their limit)`));
+        continue;
+      }
       if (!r) {
         const remoteNode = getRemoteReviewerNode();
         if (remoteNode) {

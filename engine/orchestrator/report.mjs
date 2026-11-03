@@ -63,7 +63,8 @@ export function createReporter({ cfg, st, save, sendAuto, isIdle, why = () => ''
     },
     // Remember a question list sent to the owner; any owner message clears it.
     track(replyText, now = Date.now()) {
-      if (/^Decide:/m.test(replyText)) { st.pending = { text: replyText.slice(replyText.search(/^Decide:/m)), sentAt: now }; save(); }
+      // Only a real numbered question counts; "Decide: none" must not create hourly reminders.
+      if (/^Decide:[\s\S]*^\s*\d+[.)]\s+\S/m.test(replyText)) { st.pending = { text: replyText.slice(replyText.search(/^Decide:/m)), sentAt: now }; save(); }
     },
     answered() { if (st.pending) { delete st.pending; save(); } },
   };
