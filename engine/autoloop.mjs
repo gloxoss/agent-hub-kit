@@ -447,7 +447,17 @@ function tick(st) {
             } catch (e) { say(`BACKLOG ERROR ${e.message}`); }
           }
           const trailer = COMMIT_TRAILER ? `\n\n${COMMIT_TRAILER}` : '';
-          run([`${HUB}/accept.mjs`, t.id, `review ${r.name} PASS`, media, `feat: ${t.id} (autoloop accept)${trailer}`]);
+          const out = String(run([`${HUB}/accept.mjs`, t.id, `review ${r.name} PASS`, media, `feat: ${t.id} (autoloop accept)${trailer}`]));
+          if (/Acceptance refused|ERROR/.test(out)) {
+            const why = out.split('\n').find((l) => /refused|ERROR/.test(l)) ?? out.trim().slice(0, 160);
+            if (/Self-review/i.test(why)) {
+              // The reviewer was the builder's own executor: ask an independent one instead of retrying the same accept.
+              const rv = reviewerIndependent(undefined, r.executor);
+              if (rv) { run([`${HUB}/dispatch.mjs`, 'review', t.id, rv]); say(`RE-REVIEW ${t.id} on ${rv} (the first review was by its own builder)`); }
+              else say(`BLOCKED-REVIEW ${t.id}: needs an independent reviewer and none is available`);
+            } else say(`ACCEPT-REFUSED ${t.id}: ${why.slice(0, 160)}`);
+            return;
+          }
           say(`ACCEPTED ${t.id}`);
           // Work the user wants to look at as soon as it lands (config.notifyVisible: regex on task ids).
           if (CFG.notifyVisible && new RegExp(CFG.notifyVisible).test(t.id)) say(`VISIBLE ${t.id}`);
