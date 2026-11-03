@@ -44,13 +44,11 @@ export function outageMessage({ st, hubDir, now = Date.now() }) {
   let why = [];
   try { why = explainDrain(hubDir, 6); } catch { /* no ledger yet */ }
   const next = Math.min(...Object.values(st.down ?? {}).filter((t) => t > now), Infinity);
+  void lines; void why;   // details stay in the log; the owner gets two sentences
   return [
-    `No manager available${Number.isFinite(next) ? `; next retry ${new Date(next).toTimeString().slice(0, 5)}` : ''}.`,
-    ...lines,
-    why.length ? 'Recent usage:' : null,
-    ...why.map((w, i) => `${i + 1}. ${w}`),
-    'To add or top up an account: devbox lanes add. Work in progress keeps running; new decisions wait.',
-  ].filter(Boolean).join('\n');
+    `I could not answer just now: all my assistants are out of free quota or busy.`,
+    `${Number.isFinite(next) ? `I will try again by myself at ${new Date(next).toTimeString().slice(0, 5)}. ` : ''}Your message is kept. Nothing for you to do.`,
+  ].join('\n');
 }
 
 // Stable key of the current down-set, so the same outage is announced once.
@@ -66,7 +64,7 @@ export function runSelfTest() {
     ['downKey', downKey(st, now) === 'a'],
     ['owner notice', ownerClaudeNotice({ owner: 'user', id: 'c' }, st, now)?.includes('other managers are down')],
     ['fleet no notice', ownerClaudeNotice({ owner: 'fleet', id: 'g' }, st, now) === null],
-    ['outage text', outageMessage({ st, hubDir: '/nonexistent', now }).includes('1. a: quota')],
+    ['outage text', outageMessage({ st, hubDir: '/nonexistent', now }).includes('try again by myself')],
     ['cheap', isCheap({ cost: 'free' }) && isCheap({ cost: 0 }) && !isCheap({ cost: 'plan' })],
   ];
   let ok = true;

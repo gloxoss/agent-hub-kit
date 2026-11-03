@@ -15,6 +15,19 @@ export function inQuietHours(range, now = new Date()) {
   return a <= b ? cur >= a && cur < b : cur >= a || cur < b;   // 23:00-08:00 wraps midnight
 }
 
+// The owner reads this on a phone: a few plain sentences, no job names, tokens, hours or commit text.
+export function plainMessage(digestText, reason, doneBefore) {
+  const n = (k) => Number((digestText.match(new RegExp(`${k} (\\d+)`)) || [])[1] ?? 0);
+  const running = Number((digestText.match(/Running \((\d+)\)/) || [])[1] ?? 0);
+  const done = n('ACCEPTED'), review = n('REVIEW'), open = n('OPEN') + n('ASSIGNED') + n('REWORK');
+  const lines = [`${done} tasks are finished and accepted${doneBefore != null && done > doneBefore ? ` (${done - doneBefore} new since my last message)` : ''}.`];
+  if (review) lines.push(`${review} more are built and waiting for a second check.`);
+  if (open) lines.push(`${open} have not been finished yet.`);
+  lines.push(running ? `${running} ${running === 1 ? 'is' : 'are'} being worked on right now.` : 'Nothing is being worked on right now.');
+  if (reason) lines.push(reason);
+  return { text: lines.join('\n'), done, running, review };
+}
+
 export function createReporter({ cfg, st, save, sendAuto, isIdle, why = () => '' }) {
   const o = cfg.orchestrator;
   return {
@@ -36,27 +49,27 @@ export function createReporter({ cfg, st, save, sendAuto, isIdle, why = () => ''
       if (quiet) {
         // 2. Night: nothing routine; one notice per night if nothing is running.
         const night = new Date(now - 12 * 3600_000).toDateString();
-        if (isIdle() && rep.quietNoticeFor !== night) {
-          rep.quietNoticeFor = night; save();
-          sendAuto('Nothing is running. Reply with a task when you want work to start.');
-          return 'quiet-notice';
-        }
         return null;
       }
       rep.quietNoticeFor = null;
       // 3. Change report at most every reportEveryMinutes, only if the fleet changed.
-      if (key !== rep.key && now - rep.lastAt >= (o.reportEveryMinutes ?? 15) * MIN) {
-        rep.key = key; rep.lastAt = now; rep.heartbeatAt = now; rep.hbRepeat = 0; save();
-        sendAuto(`Fleet update\n${text}`);
+      // One plain message, only when something meaningful changed: more tasks accepted, or the stuck reason changed.
+      // Otherwise silence, except one short reminder per 12 hours while nothing is moving.
+      const reason = why() || (isIdle() && /REVIEW (\d+)/.test(text) ? 'Nothing can be accepted right now: the finished tasks need a second reviewer, and none is available. I retry by myself.' : '');
+      const plain = plainMessage(text, reason, rep.done);
+      const sig = `${plain.done}|${reason}`;
+      const changed = sig !== rep.sig;
+      const minGap = plain.done > (rep.done ?? 0) ? 30 : 180;
+      if (changed && now - rep.lastAt >= minGap * MIN) {
+        rep.sig = sig; rep.done = plain.done; rep.lastAt = now; rep.heartbeatAt = now; save();
+        sendAuto(plain.text);
         return 'report';
       }
       // 4. Hourly heartbeat when nothing changed.
       // Two identical heartbeats are enough; after that the same line only repeats every heartbeatBackoffMinutes (default 6 h).
-      const gap = (rep.hbRepeat ?? 0) >= 2 ? (o.heartbeatBackoffMinutes ?? 360) : (o.heartbeatMinutes ?? 60);
-      if (now - rep.heartbeatAt >= gap * MIN) {
-        rep.heartbeatAt = now; rep.hbRepeat = (rep.hbRepeat ?? 0) + 1; save();
-        const reason = why();
-        sendAuto(`No change in the last hour.\n${text}${reason ? `\n${reason}` : isIdle() ? '\nNothing is running; reply with a task to start work.' : ''}`);
+      if (isIdle() && now - rep.heartbeatAt >= (o.heartbeatMinutes ?? 720) * MIN) {
+        rep.heartbeatAt = now; save();
+        sendAuto(plainMessage(text, why(), rep.done).text + '\nNothing changed since my last message.');
         return 'heartbeat';
       }
       return null;
@@ -89,7 +102,7 @@ export function runSelfTest() {
   checks.push(['hourly reminder', rep.tick(noon) === 'reminder' && sent[0].startsWith('Reminder')]);
   const night = new Date(2026, 9, 31, 23, 30).getTime();
   delete st.pending;
-  checks.push(['night notice once', rep.tick(night) === 'quiet-notice' && rep.tick(night + MIN) === null]);
+  checks.push(['no night message', rep.tick(night) === null && rep.tick(night + MIN) === null]);
   rep.answered();
   let ok = true;
   for (const [name, pass] of checks) { console.log(`${pass ? 'PASS' : 'FAIL'} report: ${name}`); ok = ok && pass; }
