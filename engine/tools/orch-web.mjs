@@ -11,6 +11,8 @@ import { resolveConfig } from '../orchestrator/config.mjs';
 import { fold } from '../fold.mjs';
 import { runningJobs } from '../orchestrator/jobs-view.mjs';
 import { actionsOf } from '../orchestrator/trace.mjs';
+import { loadAccounts } from '../accounts.mjs';
+import { isDown } from '../orchestrator/select.mjs';
 import { help } from './runtime.mjs';
 
 help('usage: orch-web.mjs [repoDir] [--port 8787]   (web console for the orchestrator; localhost only, token required)');
@@ -103,6 +105,15 @@ function session() {
   return { entry: start?.entry ?? null, started: start?.t ?? null, live: Boolean(live), steps: steps.slice(-80), terminal: cmdFor(start) };
 }
 
+// Managers the owner can switch to: every enabled entry that may orchestrate, with its current availability.
+function managers() {
+  const readJ = (n) => { try { return JSON.parse(fs.readFileSync(path.join(cfg.hubPath, n), 'utf8')); } catch { return {}; } };
+  const st = readJ('orch-driver.json'), control = readJ('orch-control.json');
+  const pinned = (control.order ?? [])[0] ?? null;
+  return loadAccounts(cfg.hubPath).filter((e) => (e.roles ?? []).includes('orchestrator') && e.enabled !== false)
+    .map((e) => ({ id: e.id, model: e.model ?? null, cost: e.cost ?? '?', own: e.owner === 'user', down: isDown(st, e.id), pinned: e.id === pinned }));
+}
+
 function docs() { const out = []; for (const r of new Set(DOC_ROOTS)) walk(r, out); return out.sort((a, b) => b.mtime - a.mtime).slice(0, 40); }
 function docBody(rel) {
   const abs = path.resolve(cfg.root, rel);
@@ -120,6 +131,7 @@ const server = http.createServer((req, res) => {
     if (u.pathname === '/api/chat') { const after = Number(u.searchParams.get('after') ?? 0); return send(res, 200, readJsonl(OUT, 300).filter((m) => m.t > after)); }
     if (u.pathname === '/api/log') return send(res, 200, taskLog(u.searchParams.get('task') ?? ''));
     if (u.pathname === '/api/session') return send(res, 200, session());
+    if (u.pathname === '/api/managers') return send(res, 200, managers());
     if (u.pathname === '/api/docs') return send(res, 200, docs());
     if (u.pathname === '/api/doc') { const b = docBody(u.searchParams.get('path') ?? ''); return b === null ? send(res, 404, { error: 'not found' }) : send(res, 200, { body: b }); }
     if (u.pathname === '/api/say' && req.method === 'POST') {
@@ -150,7 +162,7 @@ const PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta n
 @media (prefers-color-scheme:dark){:root{--bg:#141413;--card:#1e1e1c;--ink:#ecebe6;--mute:#9a978f;--line:#2e2d2a;--acc:#4fb3b4;--warn:#e08a5e}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,sans-serif}
 header{padding:12px 16px;border-bottom:1px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap}
-header b{font-size:16px}.pill{border:1px solid var(--line);border-radius:99px;padding:2px 10px;color:var(--mute);font-size:13px}.pill.warn{color:var(--warn);border-color:var(--warn)}
+header b{font-size:16px}.pill{border:1px solid var(--line);border-radius:99px;padding:2px 10px;color:var(--mute);font-size:13px}select{font:inherit;padding:5px 8px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink);max-width:260px}.pill.warn{color:var(--warn);border-color:var(--warn)}
 main{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:12px;padding:12px;height:calc(100vh - 56px)}
 @media(max-width:820px){main{grid-template-columns:1fr;height:auto}}
 section{background:var(--card);border:1px solid var(--line);border-radius:12px;display:flex;flex-direction:column;min-height:320px;max-height:calc(100vh - 80px);overflow:hidden}
@@ -161,7 +173,7 @@ button{font:inherit;padding:8px 14px;border-radius:8px;border:1px solid var(--ac
 .tabs{display:flex;gap:6px;padding:8px 10px;border-bottom:1px solid var(--line);flex-wrap:wrap}.tabs button{background:none;color:var(--ink);border-color:var(--line);padding:4px 10px;font-size:13px}.tabs button.on{background:var(--acc);color:#fff;border-color:var(--acc)}
 .row{padding:8px 0;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:8px}.row:last-child{border:0}.mut{color:var(--mute);font-size:13px}pre{white-space:pre-wrap;margin:0;font:13px/1.5 ui-monospace,monospace}
 </style></head><body>
-<header><b id="proj">Orchestrator</b><span class="pill" id="duty"></span><span class="pill" id="counts"></span><span class="pill warn" id="flag" hidden></span><span style="flex:1"></span><button class="ghost" onclick="say('/orch pause')">Pause</button><button class="ghost" onclick="say('/orch resume')">Resume</button></header>
+<header><b id="proj">Orchestrator</b><select id="mgr" title="Which assistant runs the orchestrator" onchange="setMgr(this.value)"></select><span class="pill" id="duty"></span><span class="pill" id="counts"></span><span class="pill warn" id="flag" hidden></span><span style="flex:1"></span><button class="ghost" onclick="say('/orch pause')">Pause</button><button class="ghost" onclick="say('/orch resume')">Resume</button></header>
 <main>
 <section><h2>Talk to the manager</h2><div class="scroll" id="chat"></div>
 <form onsubmit="return send(event)"><textarea id="box" placeholder="Write like you would to a colleague. Shift+Enter for a new line." onkeydown="if(event.key==='Enter'&&!event.shiftKey){send(event)}"></textarea><button>Send</button></form></section>
@@ -177,10 +189,12 @@ function say(t){api('/api/say',{method:'POST',body:JSON.stringify({text:t})}).th
 function send(e){e.preventDefault();const t=$('box').value.trim();if(!t)return false;$('box').value='';say(t);return false}
 async function poll(){
  const c=await api('/api/chat?after='+last);if(Array.isArray(c)&&c.length){for(const m of c){last=Math.max(last,m.t);const d=document.createElement('div');d.className='msg '+m.role;d.innerHTML=(m.role==='owner'?'You: ':'')+md(m.text).replace(/([\\w./-]*docs\\/[\\w./-]+\\.(?:md|html|txt))/g,'<a href="#" onclick="openDoc(\\'$1\\');return false">$1</a>')+'<small>'+new Date(m.t).toLocaleTimeString()+'</small>';$('chat').appendChild(d)}$('chat').scrollTop=1e9}
- S=await api('/api/state');$('proj').textContent=S.project+' on '+S.node;$('duty').textContent='on duty: '+(S.onDuty||'none');
+ S=await api('/api/state');$('proj').textContent=S.project+' on '+S.node;$('duty').textContent='on duty: '+(S.onDuty||'none');drawMgr();
  $('counts').textContent=Object.entries(S.counts||{}).map(([k,v])=>v+' '+k.toLowerCase()).join(' · ');
  const f=$('flag');const w=S.held?'builds paused: '+S.held:S.paused?'paused':'';f.hidden=!w;f.textContent=w.slice(0,90);draw();
 }
+async function drawMgr(){const m=await api('/api/managers');if(!Array.isArray(m))return;const sel=$('mgr');if(document.activeElement===sel)return;const pin=m.some(x=>x.pinned);sel.innerHTML='<option value="auto"'+(pin?'':' selected')+'>Auto: best available</option>'+m.map(x=>'<option value="'+esc(x.id)+'"'+(x.pinned?' selected':'')+'>'+esc(x.id)+' · '+esc(x.model||'')+' · '+esc(x.cost)+(x.own?' · your own account':'')+(x.down?' · unavailable now':'')+'</option>').join('')}
+function setMgr(v){say(v==='auto'?'/orch order default':'/orch use '+v)}
 const TABS=['session','running','tasks','reports'];
 function tabs(){$('tabs').innerHTML=TABS.map(t=>'<button class="'+(t===tab?'on':'')+'" onclick="tab=\\''+t+'\\';detail=null;draw()">'+t+'</button>').join('')}
 async function draw(){tabs();const p=$('panel');
