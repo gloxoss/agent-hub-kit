@@ -31,6 +31,16 @@ export function digest(cfg) {
     lines.push(`Last accepts: ${accepts.join(', ') || 'none'}`);
   } catch { /* no events yet */ }
   try { lines.push(burnLine(burnStats(hub, 180))); } catch { /* no jobs yet */ }
+  // The real reason work waits: which assistants cannot be used right now, and until when (from the engine's own records).
+  try {
+    const health = JSON.parse(fs.readFileSync(path.join(hub, 'runs', 'health.json'), 'utf8'));
+    const out = Object.entries(health).filter(([, v]) => v && v.ok === false && Date.now() - v.at < 24 * 3600_000)
+      .map(([k, v]) => {
+        const back = String(v.detail ?? v.problem ?? '').match(/(?:try again at|resets? (?:in|at|on))\s+([A-Za-z0-9: ]{3,22})/i)?.[1];
+        return `${k} (${/QUOTA|limit/i.test(String(v.detail ?? '') + String(v.problem ?? '')) ? 'out of quota' : 'failing'}${back ? `, back ${back.trim()}` : ''})`;
+      });
+    if (out.length) lines.push(`Unavailable assistants right now: ${out.join('; ')}. This is why finished tasks wait for an independent reviewer.`);
+  } catch { /* no health record yet */ }
   const commit = run('git', ['log', '-1', '--format=%h %s'], cfg.root);
   if (commit) lines.push(`Last commit: ${commit.slice(0, 100)}`);
   return lines.join('\n');
