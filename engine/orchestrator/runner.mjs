@@ -125,6 +125,18 @@ export async function runTurn(entry, prompt, session = {}) {
 
   const { file: bin, args } = commandInfo;
   const fullCommandString = [bin, ...args].join(' ');
+  // Live feed for the web console: one file per turn, rewritten at the start, appended line by line.
+  const liveFile = path.join(cfg.hubPath, 'runs', 'manager-live.jsonl');
+  let live = null;
+  if (!dry) {
+    try {
+      fs.mkdirSync(path.dirname(liveFile), { recursive: true });
+      live = fs.openSync(liveFile, 'w');
+      const sid = session.sid || session.sessionId || session.id || null;
+      fs.writeSync(live, JSON.stringify({ type: 'turn_start', t: Date.now(), entry: entry.id, family, sid, model: entry.model ?? null, command: bin }) + '\n');
+    } catch { live = null; }
+  }
+  const liveWrite = (line) => { if (live !== null) { try { fs.writeSync(live, line + '\n'); } catch { /* console is optional */ } } };
 
   if (dry) {
     console.log(`[ORCH_DRY] runTurn command: ${fullCommandString}`);
@@ -240,6 +252,7 @@ export async function runTurn(entry, prompt, session = {}) {
     rl.on('line', (line) => {
       resetSilenceTimer();
       stdoutBuffer += line + '\n';
+      liveWrite(line);
       const trimmed = line.trim();
       if (!trimmed) return;
 

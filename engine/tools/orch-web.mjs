@@ -71,6 +71,38 @@ function walk(dir, out, depth = 0) {
     else if (/\.(md|html|txt)$/i.test(it.name)) { try { out.push({ path: path.relative(cfg.root, p).replace(/\\/g, '/'), mtime: fs.statSync(p).mtimeMs }); } catch { /* gone */ } }
   }
 }
+// Live transcript of the manager's current or latest turn, as plain readable steps.
+function session() {
+  const rows = readJsonl(path.join(RUNS, 'manager-live.jsonl'), 4000);
+  const start = rows.find((r) => r.type === 'turn_start') ?? null;
+  const steps = [];
+  for (const e of rows) {
+    if (e.type === 'assistant' && Array.isArray(e.message?.content)) {
+      for (const c of e.message.content) {
+        if (c.type === 'thinking' && c.thinking) steps.push({ k: 'thinking', text: String(c.thinking).slice(0, 700) });
+        else if (c.type === 'tool_use') steps.push({ k: 'tool', text: `${c.name}: ${String(c.input?.command ?? c.input?.file_path ?? c.input?.path ?? JSON.stringify(c.input ?? {})).slice(0, 300)}` });
+        else if (c.type === 'text' && c.text) steps.push({ k: 'said', text: String(c.text).slice(0, 1500) });
+      }
+    } else if (e.type === 'user' && Array.isArray(e.message?.content)) {
+      for (const c of e.message.content) if (c.type === 'tool_result') steps.push({ k: 'result', text: String(typeof c.content === 'string' ? c.content : JSON.stringify(c.content)).slice(0, 260) });
+    } else if (e.type === 'item.completed' && e.item?.type === 'command_execution') steps.push({ k: 'tool', text: `Bash: ${String(e.item.command).slice(0, 300)}` });
+    else if (e.type === 'item.completed' && e.item?.text) steps.push({ k: 'said', text: String(e.item.text).slice(0, 1500) });
+    else if (e.type === 'result') steps.push({ k: 'done', text: `finished: ${e.subtype ?? ''}${e.is_error ? ' (error)' : ''}` });
+  }
+  const live = start && !steps.some((s) => s.k === 'done');
+  const d = (() => { try { return JSON.parse(fs.readFileSync(path.join(cfg.hubPath, 'orch-driver.json'), 'utf8')); } catch { return {}; } })();
+  const sid = d.sessions?.[start?.entry]?.sid ?? start?.sid ?? null;
+  const home = process.env.HOME || '';
+  const cmdFor = (e) => {
+    if (!e) return null;
+    if (/gemini/i.test(e.model ?? e.entry ?? '')) return { note: 'Gemini sessions cannot be resumed (the proxy rejects it). This opens a fresh interactive session in the project instead.', cmd: `cd ${cfg.root} && claude-ag2-gemini` };
+    if (/codex/.test(e.family ?? '')) return { note: 'Resumes the same Codex session.', cmd: sid ? `cd ${cfg.root} && codex-proxy resume ${sid}` : `cd ${cfg.root} && codex-proxy` };
+    return { note: 'Resumes the same Claude session.', cmd: sid ? `cd ${cfg.root} && ${e.command ?? 'claude'} --resume ${sid}` : `cd ${cfg.root} && ${e.command ?? 'claude'}` };
+  };
+  void home;
+  return { entry: start?.entry ?? null, started: start?.t ?? null, live: Boolean(live), steps: steps.slice(-80), terminal: cmdFor(start) };
+}
+
 function docs() { const out = []; for (const r of new Set(DOC_ROOTS)) walk(r, out); return out.sort((a, b) => b.mtime - a.mtime).slice(0, 40); }
 function docBody(rel) {
   const abs = path.resolve(cfg.root, rel);
@@ -87,6 +119,7 @@ const server = http.createServer((req, res) => {
     if (u.pathname === '/api/state') return send(res, 200, state());
     if (u.pathname === '/api/chat') { const after = Number(u.searchParams.get('after') ?? 0); return send(res, 200, readJsonl(OUT, 300).filter((m) => m.t > after)); }
     if (u.pathname === '/api/log') return send(res, 200, taskLog(u.searchParams.get('task') ?? ''));
+    if (u.pathname === '/api/session') return send(res, 200, session());
     if (u.pathname === '/api/docs') return send(res, 200, docs());
     if (u.pathname === '/api/doc') { const b = docBody(u.searchParams.get('path') ?? ''); return b === null ? send(res, 404, { error: 'not found' }) : send(res, 200, { body: b }); }
     if (u.pathname === '/api/say' && req.method === 'POST') {
@@ -148,10 +181,11 @@ async function poll(){
  $('counts').textContent=Object.entries(S.counts||{}).map(([k,v])=>v+' '+k.toLowerCase()).join(' · ');
  const f=$('flag');const w=S.held?'builds paused: '+S.held:S.paused?'paused':'';f.hidden=!w;f.textContent=w.slice(0,90);draw();
 }
-const TABS=['running','tasks','reports'];
+const TABS=['session','running','tasks','reports'];
 function tabs(){$('tabs').innerHTML=TABS.map(t=>'<button class="'+(t===tab?'on':'')+'" onclick="tab=\\''+t+'\\';detail=null;draw()">'+t+'</button>').join('')}
 async function draw(){tabs();const p=$('panel');
  if(detail){p.innerHTML=detail;return}
+ if(tab==='session'){const s=await api('/api/session');const k={thinking:'thinking',tool:'ran',result:'got',said:'said',done:'end'};p.innerHTML='<p class="mut">'+(s.entry?('Manager: <b>'+esc(s.entry)+'</b> · '+(s.live?'working now':'idle, last turn shown')):'No turn recorded yet.')+'</p>'+(s.terminal?'<p class="mut">Open this manager in a terminal:</p><pre id="tc">'+esc(s.terminal.cmd)+'</pre><p class="mut">'+esc(s.terminal.note)+' <a href="#" onclick="navigator.clipboard.writeText(document.getElementById(\'tc\').textContent);return false">copy</a></p>':'')+(s.steps||[]).map(x=>'<div class="row"><span class="mut" style="min-width:62px">'+k[x.k]+'</span><div style="flex:1;white-space:pre-wrap;word-break:break-word">'+esc(x.text)+'</div></div>').join('');if(s.live)setTimeout(()=>{if(tab==='session'&&!detail)draw()},2500);return}
  if(tab==='running'){const r=S.running||[];p.innerHTML=r.length?r.map(j=>'<div class="row"><div><b>'+esc(j.task)+'</b><div class="mut">'+esc(j.goal||'')+'</div></div><div class="mut">'+j.kind+' · '+esc(j.on)+' · '+j.minutes+' min <a href="#" onclick="openLog(\\''+j.task+'\\');return false">log</a> <a href="#" onclick="say(\\'/orch stop '+j.task+'\\');return false">stop</a></div></div>').join(''):'<p class="mut">Nothing is running right now.</p>'}
  if(tab==='tasks'){p.innerHTML=(S.tasks||[]).map(t=>'<div class="row"><div><b>'+esc(t.id)+'</b><div class="mut">'+esc(t.title)+'</div></div><div class="mut">'+t.status.toLowerCase()+' <a href="#" onclick="openLog(\\''+t.id+'\\');return false">log</a> <a href="#" onclick="say(\\'/orch first '+t.id+'\\');return false">do first</a></div></div>').join('')||'<p class="mut">No open tasks.</p>'}
  if(tab==='reports'){const d=await api('/api/docs');p.innerHTML=d.map(x=>'<div class="row"><a href="#" onclick="openDoc(\\''+x.path+'\\');return false">'+esc(x.path)+'</a><span class="mut">'+new Date(x.mtime).toLocaleString()+'</span></div>').join('')||'<p class="mut">No documents yet.</p>'}}
