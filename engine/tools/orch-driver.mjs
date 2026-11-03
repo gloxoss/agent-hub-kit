@@ -16,6 +16,7 @@ import { loadState, saveState } from '../orchestrator/state.mjs';
 import { EventIntake, ownerText } from '../orchestrator/events.mjs';
 import { candidates, markDown, recordTurn, turnsInLastHour, ownerClaudeNotice, outageMessage, downKey } from '../orchestrator/select.mjs';
 import { runTurn } from '../orchestrator/runner.mjs';
+import { traceBlock } from '../orchestrator/trace.mjs';
 import { proxyStatus, usesProxy, softenFailure } from '../orchestrator/proxy-health.mjs';
 import { extractReply, extractSessionId, turnStats, failureOf } from '../orchestrator/reply.mjs';
 import { bootstrapPrompt, continuePrompt, responderPrompt, digest } from '../orchestrator/prompt.mjs';
@@ -107,6 +108,10 @@ async function managerTurn({ events, owner }) {
       const prompt = fresh ? bootstrapPrompt({ cfg, entry, events, owner, conversation: convo, takeover }) : continuePrompt({ cfg, entry, events, owner, conversation: convo });
       const newId = crypto.randomUUID();
       log(`turn -> ${entry.id}${fresh ? ' (new session)' : ''}: ${events.length} event(s), ${owner.length} owner message(s)`);
+      if (owner.length && !st.ackedAt?.[owner.join('|').slice(0, 80)]) {
+        (st.ackedAt ??= {})[owner.join('|').slice(0, 80)] = Date.now();
+        sendReply('*Got it.* I am working on your message now. Usually 1 to 3 minutes.');
+      }
       let res = await runTurn(entry, prompt, fresh ? { id: newId } : { sid: sess.sid });
       let fail = failureOf(res);
       if (fail && usesProxy(entry)) {
@@ -152,7 +157,7 @@ async function managerTurn({ events, owner }) {
         const again = await runTurn(entry, `Answer the owner now in plain words, 3 to 8 short lines, using only what you already read plus this live digest. Run no more commands.\nOwner: ${owner.join(' | ')}\nFleet now:\n${digest(cfg)}`, { sid: fresh ? newId : sess.sid });
         if (!failureOf(again)) reply = extractReply(again.stdout, entry.family);
       }
-      if (reply && !/^NOOP\b/i.test(reply)) { (owner.length ? sendReply : sendAuto)(reply); reporter.track(reply); }
+      if (reply && !/^NOOP\b/i.test(reply)) { (owner.length ? sendReply : sendAuto)(owner.length ? reply + traceBlock(res.stdout) : reply); reporter.track(reply); }
       else if (owner.length) sendReply(`${entry.id} read your message but gave no answer, so nothing was changed. Ask again, or use /orch status, /orch quotas, /orch use <id>.`);
       return;
     }

@@ -6,8 +6,9 @@ import { spawnSync } from 'node:child_process';
 import { loadAccounts, pick } from '../accounts.mjs';
 import { isDown, turnsInLastHour, candidates } from './select.mjs';
 import { burnStats, burnLimits, burnVerdict, burnLine } from './burn.mjs';
+import { actionsOf } from './trace.mjs';
 
-const HELP = 'Commands: /orch status | quotas | burn | use <id> | order <id,id,...|default> | pause | resume | reset | models | shot <route>';
+const HELP = 'Commands: /orch status | last | quotas | burn | use <id> | order <id,id,...|default> | pause | resume | reset | models | shot <route>';
 const hhmm = (t) => new Date(t).toTimeString().slice(0, 5);
 
 export function controlFile(cfg) { return path.join(cfg.hubPath, 'orch-control.json'); }
@@ -53,6 +54,13 @@ export async function runCommand(text, ctx) {
         `Manager turns in the last hour: ${turnsInLastHour(st)} (limit ${cfg.orchestrator.maxTurnsPerHour} for automatic wakes; your messages always get answered)`,
         'Order:', ...lines, HELP,
       ].join('\n');
+    }
+    case 'last': {
+      // What the manager really did in its latest run, read from the saved run, not from its own words.
+      let raw = '';
+      try { raw = fs.readFileSync(path.join(cfg.hubPath, 'runs', 'last-turn.jsonl'), 'utf8'); } catch { /* no run yet */ }
+      const a = actionsOf(raw, 10);
+      return a.length ? ['*Last run: what I did*', ...a.map((x) => `• ${x}`)].join('\n') : 'My last run changed nothing and ran no commands, or there is no run saved yet.';
     }
     case 'burn': {
       const lim = burnLimits(cfg);

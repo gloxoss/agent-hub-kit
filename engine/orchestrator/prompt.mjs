@@ -61,7 +61,7 @@ export function rules(cfg, entry) {
     edits,
     `Hub folder: ${path.relative(cfg.root, cfg.hubPath) || '.'}. Never read or print secrets (.env files, ~/.config/devbox, ~/.cli-proxy-api).`,
     cfg.orchestrator.screenshotCommand ? `Screenshots: run \`${cfg.orchestrator.screenshotCommand} <route> <out.png>\` then \`wa image <out.png> "<caption>"\`.` : null,
-    cfg.orchestrator.browserAgentCommand ? `Browsing, page checks and visual reports: hand the task to the browser agent and relay its answer in plain words. It works read-only for the owner: page checks, screenshots, reports. Run: \`${cfg.orchestrator.browserAgentCommand} -p "<one clear task, with the page address>" --sandbox --print-timeout 600s\`. If the command says it is not signed in, tell the owner exactly that.` : null,
+    cfg.orchestrator.browserAgentCommand ? `Browsing, page checks and visual reports: hand the task to the browser agent and relay its answer in plain words. It works read-only for the owner: page checks, screenshots, reports. Run: \`${cfg.orchestrator.browserAgentCommand} -p "<one clear task, with the page address>" --dangerously-skip-permissions --print-timeout 600s\` (owner approved auto-approve for this agent; it runs in an empty scratch folder and must only browse and report, never edit project files). If the command says it is not signed in, tell the owner exactly that.` : null,
     REPLY_RULES,
     'End every turn by updating docs/HANDOFF.md (under 40 lines: running, waiting for the owner, next 3 actions).',
   ].filter(Boolean).join('\n');
