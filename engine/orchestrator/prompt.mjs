@@ -51,13 +51,15 @@ const REPLY_RULES = `How to write to the owner (your final text is sent on Whats
 - If you need an answer from them, end with: "Decide:" then numbered questions, then "Reply: 1 yes 2 no". Do not write "Decide: none".
 - Turns started by an event (no owner message) stay silent (reply exactly NOOP) unless something changed that the owner must know.`;
 
-export function rules(cfg, entry) {
+export function rules(cfg, entry, hasOwner = false) {
   const edits = isCheap(entry)
     ? 'You run on a free model: you may make small edits yourself (briefs, config, docs, tiny fixes). Anything larger becomes a task for a worker.'
     : 'You run on a costly model: you NEVER write or edit project code. Plan, write task briefs under the hub, dispatch workers, review, accept. A turn that tries to write code is stopped.';
   return [
     `You are the orchestrator of "${cfg.projectName}" on machine "${cfg.nodeName}" (agent: ${entry.id}).`,
-    `Method and where all context lives: ${PLAYBOOK} (read it once at the start of a fresh session).`,
+    hasOwner
+      ? `The owner wrote to you. Answer THEM in this very turn, from the "Fleet now" status below. Read at most 2 files, and only if the question truly needs them; do not read the playbook (${PLAYBOOK}) and do not browse the hub. Never end this turn with NOOP.`
+      : `Method and where all context lives: ${PLAYBOOK} (read it once at the start of a fresh session).`,
     edits,
     `Hub folder: ${path.relative(cfg.root, cfg.hubPath) || '.'}. Never read or print secrets (.env files, ~/.config/devbox, ~/.cli-proxy-api).`,
     cfg.orchestrator.screenshotCommand ? `Screenshots: run \`${cfg.orchestrator.screenshotCommand} <route> <out.png>\` then \`wa image <out.png> "<caption>"\`.` : null,
@@ -72,8 +74,8 @@ const block = (title, items) => (items.length ? `${title}\n${items.map((x, i) =>
 // First prompt of a session (or after rotation/takeover). `takeover` names the manager that handled the last turn.
 export function bootstrapPrompt({ cfg, entry, events, owner = [], conversation = [], takeover = null, corrections = [] }) {
   return [
-    rules(cfg, entry),
-    takeover ? `You take over from ${takeover}. Read docs/HANDOFF.md first.` : null,
+    rules(cfg, entry, owner.length > 0),
+    takeover && !owner.length ? `You take over from ${takeover}. Read docs/HANDOFF.md first.` : null,
     owner.length ? block('The owner just wrote (answer this first, it decides the topic):', owner) : null,
     `Fleet now (background; use it only if the owner asks about status):\n${digest(cfg)}`,
     block('Owner conversation while you were busy (answered by the side responder; verify against the fleet and correct anything wrong):', conversation),

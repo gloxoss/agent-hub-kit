@@ -163,7 +163,7 @@ async function managerTurn({ events, owner }) {
       // A manager that spent all its steps reading the hub never wrote the answer: ask once more, with no tools, from what it learned.
       if ((!reply || /^NOOP\b/i.test(reply)) && owner.length) {
         log(`${entry.id} gave no answer to the owner after ${stats.turns ?? '?'} step(s); asking for the answer now`);
-        const again = await runTurn(entry, `Answer the owner now in plain words, 3 to 8 short lines, using only what you already read plus this live digest. Run no more commands.\nOwner: ${owner.join(' | ')}\nFleet now:\n${digest(cfg)}`, { sid: fresh ? newId : sess.sid });
+        const again = await runTurn(entry, `Answer the owner now in plain words, 3 to 8 short lines, using only what you already read plus this live digest. Run no more commands.\nOwner: ${owner.join(' | ')}\nFleet now:\n${digest(cfg)}`, geminiNoResume ? { id: crypto.randomUUID() } : { sid: fresh ? newId : sess.sid });
         if (!failureOf(again)) reply = extractReply(again.stdout, entry.family);
       }
       if (reply && !/^NOOP\b/i.test(reply)) {
