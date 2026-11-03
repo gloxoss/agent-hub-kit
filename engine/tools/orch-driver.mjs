@@ -16,6 +16,7 @@ import { loadState, saveState } from '../orchestrator/state.mjs';
 import { EventIntake, ownerText } from '../orchestrator/events.mjs';
 import { candidates, markDown, recordTurn, turnsInLastHour, ownerClaudeNotice, outageMessage, downKey } from '../orchestrator/select.mjs';
 import { runTurn } from '../orchestrator/runner.mjs';
+import { proxyStatus, usesProxy, softenFailure } from '../orchestrator/proxy-health.mjs';
 import { extractReply, extractSessionId, turnStats, failureOf } from '../orchestrator/reply.mjs';
 import { bootstrapPrompt, continuePrompt, responderPrompt, digest } from '../orchestrator/prompt.mjs';
 import { runCommand, readControl } from '../orchestrator/commands.mjs';
@@ -106,8 +107,23 @@ async function managerTurn({ events, owner }) {
       const prompt = fresh ? bootstrapPrompt({ cfg, entry, events, owner, conversation: convo, takeover }) : continuePrompt({ cfg, entry, events, owner, conversation: convo });
       const newId = crypto.randomUUID();
       log(`turn -> ${entry.id}${fresh ? ' (new session)' : ''}: ${events.length} event(s), ${owner.length} owner message(s)`);
-      const res = await runTurn(entry, prompt, fresh ? { id: newId } : { sid: sess.sid });
-      const fail = failureOf(res);
+      let res = await runTurn(entry, prompt, fresh ? { id: newId } : { sid: sess.sid });
+      let fail = failureOf(res);
+      if (fail && usesProxy(entry)) {
+        const px = await proxyStatus();
+        log(`${entry.id} turn failed (${fail.reason}); stderr: ${String(res.stderr ?? '').replace(/\s+/g, ' ').trim().slice(-300) || '(empty)'}; proxy: ${px.up ? `${px.available}/${px.total} accounts usable` : 'not answering'}`);
+        const soft = softenFailure(fail, px, entry);
+        if (soft?.soft && !res.retriedOnce) {
+          // The proxy has accounts: the failure was one unlucky account or a slow turn. Try the same manager once more, fresh session.
+          log(`${entry.id}: retrying once in a fresh session`);
+          const again = await runTurn(entry, bootstrapPrompt({ cfg, entry, events, owner, conversation: convo, takeover }), { id: crypto.randomUUID() });
+          again.retriedOnce = true;
+          res = again; fail = failureOf(again);
+          if (fail) fail = softenFailure(fail, px, entry);
+        } else fail = soft;
+      } else if (fail) {
+        log(`${entry.id} turn failed (${fail.reason}); stderr: ${String(res.stderr ?? '').replace(/\s+/g, ' ').trim().slice(-300) || '(empty)'}`);
+      }
       if (fail) {
         markDown(st, entry.id, fail.downMs, fail.reason);
         delete st.sessions[entry.id];
