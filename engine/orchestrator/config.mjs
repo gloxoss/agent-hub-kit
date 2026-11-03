@@ -79,6 +79,7 @@ export function resolveConfig(startDir = process.cwd()) {
     rotate: { contextTokens: 75000, turns: 8 },
     quietHours: "23:00-08:00",
     screenshotCommand: null,
+    browserAgentCommand: null,   // e.g. "agy": an agent with a real browser, for page checks and reports
     reportEveryMinutes: 15,
     heartbeatMinutes: 60,
   };

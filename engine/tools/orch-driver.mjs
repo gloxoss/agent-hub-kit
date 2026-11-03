@@ -76,7 +76,7 @@ const queue = [];        // system events waiting for the manager
 const ownerQueue = [];   // owner messages waiting for the manager
 const history = [];      // owner <-> side-responder conversation to hand to the manager
 const quotaBurst = [];
-const reporter = createReporter({ cfg, st, save, sendAuto, isIdle: () => !busy && /Running \(0\)/.test(digest(cfg)), why: () => (st.burn?.tripped ? `New builds are held: ${st.burn.why} They restart after the first accepted task or after 45 minutes.` : '') });
+const reporter = createReporter({ cfg, st, save, sendAuto, isIdle: () => !busy && /Running \(0\)/.test(digest(cfg)), why: () => (st.burn?.tripped ? `new builds are paused to protect quota, they restart after the next accepted task or in 45 minutes` : '') });
 
 // Side responder: answers the owner at once while the manager is busy. Read-only (edit tools denied for every responder).
 async function respondWhileBusy(text) {

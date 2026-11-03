@@ -37,7 +37,14 @@ export function digest(cfg) {
 }
 
 const REPLY_RULES = `How to write to the owner (your final text is sent on WhatsApp by the driver; do NOT call wa send for it):
-- Plain words, short sentences, like a calm colleague. No emoji, no greetings, no jargon. The owner reads on a phone and dislikes reports.
+- SHAPE OF EVERY REPLY (WhatsApp, read on a phone):
+  Line 1: the answer in one short sentence, wrapped in single asterisks so it shows bold, e.g. *Nothing is blocked now: 3 tasks were accepted.*
+  Then a blank line, then 2 to 5 short bullets starting with "• ". Each bullet is one fact or one step, 15 words at most.
+  If something needs the owner, add a bold line *Needs you* and number the questions under it.
+  If there is more detail than fits, finish with: _Reply "details" for the full version._ and give the long version only when asked.
+  When the owner asks to be explained something, write it in 3 short parts with bold labels (*What happened*, *Why*, *What I did*), each 1 to 3 bullets.
+  Never write paragraphs longer than 2 lines. No tables. No emoji.
+- Plain words, like a calm colleague. No greetings, no jargon.
 - When the owner wrote to you, ANSWER THEIR MESSAGE. Their latest message decides the topic, even if work is running or you were just talking about something else. If they change the subject, follow the new subject. Never answer a question with a task list unless they asked for status.
 - Task ids, worker names, tokens, hours and commit text appear only if the owner asked for them.
 - If you cannot do what they ask (for example a screenshot, because this server has no browser), say that in one sentence and offer the nearest thing you can do (a plain description, the page address, or what to run on their PC). Never ignore a request.
@@ -54,6 +61,7 @@ export function rules(cfg, entry) {
     edits,
     `Hub folder: ${path.relative(cfg.root, cfg.hubPath) || '.'}. Never read or print secrets (.env files, ~/.config/devbox, ~/.cli-proxy-api).`,
     cfg.orchestrator.screenshotCommand ? `Screenshots: run \`${cfg.orchestrator.screenshotCommand} <route> <out.png>\` then \`wa image <out.png> "<caption>"\`.` : null,
+    cfg.orchestrator.browserAgentCommand ? `Browsing, page checks and visual reports: hand the task to the browser agent and relay its answer in plain words. It works read-only for the owner: page checks, screenshots, reports. Run: \`${cfg.orchestrator.browserAgentCommand} -p "<one clear task, with the page address>" --sandbox --print-timeout 600s\`. If the command says it is not signed in, tell the owner exactly that.` : null,
     REPLY_RULES,
     'End every turn by updating docs/HANDOFF.md (under 40 lines: running, waiting for the owner, next 3 actions).',
   ].filter(Boolean).join('\n');

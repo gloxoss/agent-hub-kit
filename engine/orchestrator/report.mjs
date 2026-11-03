@@ -20,11 +20,13 @@ export function plainMessage(digestText, reason, doneBefore) {
   const n = (k) => Number((digestText.match(new RegExp(`${k} (\\d+)`)) || [])[1] ?? 0);
   const running = Number((digestText.match(/Running \((\d+)\)/) || [])[1] ?? 0);
   const done = n('ACCEPTED'), review = n('REVIEW'), open = n('OPEN') + n('ASSIGNED') + n('REWORK');
-  const lines = [`${done} tasks are finished and accepted${doneBefore != null && done > doneBefore ? ` (${done - doneBefore} new since my last message)` : ''}.`];
-  if (review) lines.push(`${review} more are built and waiting for a second check.`);
-  if (open) lines.push(`${open} have not been finished yet.`);
-  lines.push(running ? `${running} ${running === 1 ? 'is' : 'are'} being worked on right now.` : 'Nothing is being worked on right now.');
-  if (reason) lines.push(reason);
+  const newOnes = doneBefore != null && done > doneBefore ? ` (+${done - doneBefore} new)` : '';
+  const head = reason ? `*Stuck: ${reason.replace(/\.$/, '')}.*` : `*${done} tasks done${newOnes}.*`;
+  const lines = [head, ''];
+  if (reason) lines.push(`• ${done} tasks done${newOnes}`);
+  if (review) lines.push(`• ${review} built, waiting for a second check`);
+  if (open) lines.push(`• ${open} not finished yet`);
+  lines.push(running ? `• ${running} being worked on now` : '• nothing is being worked on now');
   return { text: lines.join('\n'), done, running, review };
 }
 
@@ -55,7 +57,7 @@ export function createReporter({ cfg, st, save, sendAuto, isIdle, why = () => ''
       // 3. Change report at most every reportEveryMinutes, only if the fleet changed.
       // One plain message, only when something meaningful changed: more tasks accepted, or the stuck reason changed.
       // Otherwise silence, except one short reminder per 12 hours while nothing is moving.
-      const reason = why() || (isIdle() && /REVIEW (\d+)/.test(text) ? 'Nothing can be accepted right now: the finished tasks need a second reviewer, and none is available. I retry by myself.' : '');
+      const reason = why() || (isIdle() && /REVIEW (\d+)/.test(text) ? 'finished tasks wait for a second reviewer and none is available, I retry by myself' : '');
       const plain = plainMessage(text, reason, rep.done);
       const sig = `${plain.done}|${reason}`;
       const changed = sig !== rep.sig;
