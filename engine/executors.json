@@ -595,6 +595,109 @@
       "tier": 4,
       "fit": "light ops, simple scripts, runtime chores",
       "disabled": true
+    },
+    {
+      "name": "codex-rot",
+      "kind": "both",
+      "maxSessions": 0,
+      "buildCmd": "agent-accounts",
+      "buildExtraArgs": [
+        "run",
+        "codex",
+        "--",
+        "exec",
+        "--json",
+        "--skip-git-repo-check",
+        "--sandbox",
+        "workspace-write",
+        "{msg}"
+      ],
+      "interactiveArgs": [
+        "run",
+        "codex",
+        "--interactive",
+        "--",
+        "--sandbox",
+        "workspace-write",
+        "{msg}"
+      ],
+      "reviewCmd": "agent-accounts",
+      "reviewExtraArgs": [
+        "run",
+        "codex",
+        "--",
+        "exec",
+        "--json",
+        "--skip-git-repo-check",
+        "--sandbox",
+        "read-only",
+        "--output-last-message",
+        "{outFile}",
+        "{msg}"
+      ],
+      "watch": "agent-accounts resume codex {sid}",
+      "restore": "All Codex accounts are out of quota: agent-accounts status. Wait for the earliest reset, or add an account: agent-accounts add codex <name>.",
+      "note": "Rotates between saved accounts with agent-accounts (https://github.com/gloxoss/agent-accounts). Off until you save accounts: agent-accounts import <provider> <name>, then raise maxSessions."
+    },
+    {
+      "name": "claude-rot",
+      "kind": "both",
+      "maxSessions": 0,
+      "buildCmd": "agent-accounts",
+      "buildExtraArgs": [
+        "run",
+        "claude",
+        "--",
+        "-p",
+        "{msg}",
+        "--session-id",
+        "{sid}",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--dangerously-skip-permissions"
+      ],
+      "interactiveArgs": [
+        "run",
+        "claude",
+        "--interactive",
+        "--",
+        "--session-id",
+        "{sid}",
+        "--dangerously-skip-permissions",
+        "{msg}"
+      ],
+      "watch": "agent-accounts resume claude {sid}",
+      "restore": "All Claude accounts are out of quota: agent-accounts status. Wait for the earliest reset, or add an account: agent-accounts add claude <name>.",
+      "note": "Rotates between saved accounts with agent-accounts (https://github.com/gloxoss/agent-accounts). Off until you save accounts: agent-accounts import <provider> <name>, then raise maxSessions."
+    },
+    {
+      "name": "agy-rot",
+      "kind": "builder",
+      "maxSessions": 0,
+      "buildCmd": "agent-accounts",
+      "buildExtraArgs": [
+        "run",
+        "agy",
+        "--",
+        "-p",
+        "{msg}",
+        "--output-format",
+        "stream-json",
+        "--dangerously-skip-permissions"
+      ],
+      "interactiveArgs": [
+        "run",
+        "agy",
+        "--interactive",
+        "--",
+        "--dangerously-skip-permissions",
+        "-i",
+        "{msg}"
+      ],
+      "watch": "agy --conversation {sid}",
+      "restore": "All agy accounts are out of credits: agent-accounts status. Check the Antigravity usage page for the reset.",
+      "note": "Rotates between saved accounts with agent-accounts (https://github.com/gloxoss/agent-accounts). Off until you save accounts: agent-accounts import <provider> <name>, then raise maxSessions."
     }
   ]
 }
