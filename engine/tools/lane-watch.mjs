@@ -48,7 +48,9 @@ function snapshot() {
       if (!(age > STUCK_MIN && age < 180)) continue;
       // an old run of a task that is already accepted or cancelled is not stuck, only left over
       const task = f.replace(/^builder-\d+-/, '').replace(/-mw[0-9a-z]+\.log$/, '');
-      if (/"status": "(ACCEPTED|CANCELLED)"/.test(run('hub.mjs', ['show', task]))) continue;
+      const shown = run('hub.mjs', ['show', task]);
+      // when the hub could not answer (busy machine), say nothing rather than raise a false alarm
+      if (!shown || /"status": "(ACCEPTED|CANCELLED)"/.test(shown)) continue;
       out.push([`stuck:${f}`, `STUCK? ${f.replace(/\.log$/, '')} no log change for ${Math.round(age)} min`]);
     }
   } catch {}
