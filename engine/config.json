@@ -79,7 +79,8 @@
     "maxTabs": 14
   },
   "keeper": {
-    "startChores": true
+    "startChores": true,
+    "badWindowMin": 6
   },
   "reap": {
     "errorIdleMinutes": 1,

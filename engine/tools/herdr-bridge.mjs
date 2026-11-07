@@ -475,7 +475,9 @@ async function reap() {
       // 1. blocked by a quota or login error: free the hub, keep the window
       const tail = text.split('\n').slice(-25);
       const hit = ERROR_PATTERNS.map(([kind, re]) => [kind, tail.find((l) => re.test(l))]).find(([, l]) => l);
-      if (hit && idleMin >= MIN.errorIdle && !w.errorHandled) {
+      // A retry loop (spinner, attempt counter) keeps the screen changing, so a quota message that says it will retry is acted on at once.
+      const strong = tail.some((l) => /retrying in|monthly usage limit reached|credits? balance (is )?too low|out of credits/i.test(l));
+      if (hit && (idleMin >= MIN.errorIdle || strong) && !w.errorHandled) {
         const [kind, line] = hit;
         w.errorHandled = true;
         try { fs.appendFileSync(key, `\nERROR ${kind}: ${line.trim()}\n[reaper] ${t.label} stopped by ${kind}\n[dispatch] exit 1\n`); } catch {}

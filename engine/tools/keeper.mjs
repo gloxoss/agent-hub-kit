@@ -147,7 +147,7 @@ function cycle() {
     // Executor-level trouble only: a task that fails, or a job the orchestrator killed (DOWN), says nothing about the executor.
     // QUOTA or AUTH means the account is out; four plain failures in 30 minutes is a sign too.
     const bad = (ex) => {
-      const recent = J.filter((j) => j.executor === ex && j.kind === 'builder' && now - j.t < 30 * 60_000);
+      const recent = J.filter((j) => j.executor === ex && j.kind === 'builder' && now - j.t < (K.badWindowMin ?? 30) * 60_000); // config keeper.badWindowMin: how long a QUOTA/AUTH job keeps an executor out
       return recent.some((j) => /QUOTA|AUTH/.test(j.status)) || recent.filter((j) => /^FAILED/.test(j.status)).length >= 4;
     };
     const used = (ex) => running.filter((j) => j.kind === 'builder' && j.executor === ex).length + started.filter((s) => s.ex === ex).length;
