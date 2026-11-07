@@ -69,6 +69,9 @@ function snapshot() {
       if (!shown || /"status": "(ACCEPTED|CANCELLED)"/.test(shown)) continue;
       // only a window that is still open can be stuck: a log whose window was closed is a leftover, not a problem
       if (!live.some((m) => m[2].startsWith(`${task} `))) continue;
+      // an older log of a task that has a newer run is a leftover of the old window, not the live one
+      const newer = fs.readdirSync(runs).some((n) => n !== f && n.endsWith('.log') && n.includes(`-${task}-mw`) && fs.statSync(path.join(runs, n)).mtimeMs > fs.statSync(p).mtimeMs);
+      if (newer) continue;
       out.push([`stuck:${f}`, `STUCK? ${f.replace(/\.log$/, '')} no log change for ${Math.round(age)} min`]);
     }
   } catch {}
