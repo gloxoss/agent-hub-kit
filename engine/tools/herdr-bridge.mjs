@@ -351,14 +351,14 @@ function gather() {
 const NOTES = path.join(HUB, 'runs', 'notifications.log');
 const REAP = CFG.reap ?? {};
 const MIN = {
-  errorIdle: Number(REAP.errorIdleMinutes ?? 2),
+  errorIdle: Number(REAP.errorIdleMinutes ?? 1),
   finishedNotify: Number(REAP.finishedNotifyMinutes ?? 10),
   renotify: Number(REAP.renotifyMinutes ?? 60),
   stalled: Number(REAP.stalledMinutes ?? 30),
 };
 const ERROR_PATTERNS = [
-  ['QUOTA', /weekly usage limit reached|usage limit reached|insufficient balance|out of credits|credit balance is too low|rate limit (reached|exceeded)|prepaid_balance_exhausted|exceeded your (current )?quota/i],
-  ['AUTH', /invalid api key|please run \/login|not logged in|api error: 40[13]|authentication (failed|error)/i],
+  ['QUOTA', /weekly usage limit reached|usage limit reached|insufficient balance|out of credits|credits? balance (is )?too low|credit balance is too low|rate limit (reached|exceeded)|prepaid_balance_exhausted|exceeded your (current )?quota/i],
+  ['AUTH', /invalid api key|please run \/login|not logged in|api error: 40[13]|authentication (failed|error)|please sign in|not signed in|you are signed out|sign in to continue/i],
 ];
 
 async function history() {
