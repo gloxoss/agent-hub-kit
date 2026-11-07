@@ -72,7 +72,11 @@ function handle(o) {
     }
     if (it.type === 'file_change') return out('tool', `edit ${short((it.changes ?? []).map((x) => x.path).join(', '), 200)}`, ms);
     if (it.type === 'reasoning') return;
-    if (it.type === 'error') return out('err', short(it.message, 240), ms);
+    if (it.type === 'error') {
+      // Codex reports its own startup warnings as "error" items. These are not failures of the job.
+      if (/skills context budget|skills scan|failed to load skill/i.test(String(it.message))) return out('info', 'note: Codex dropped the skill descriptions (too many skills installed). Harmless.', ms);
+      return out('err', short(it.message, 240), ms);
+    }
     return;
   }
 

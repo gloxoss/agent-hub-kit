@@ -34,13 +34,17 @@ function frame() {
   const jobs = new Map();
   for (const j of jsonl(path.join(HUB, 'runs', 'jobs.jsonl'))) jobs.set(j.id, { ...(jobs.get(j.id) || {}), ...j });
   const now = Date.now();
-  // A job runs when its log has no exit marker and was written to in the last 15 minutes.
+  // A job runs when its log has no exit marker and was written to recently.
+  // Interactive windows write a heartbeat every 30 s, so 100 s of silence means the window was closed.
+  // Headless runs may think quietly for a while, so they get 15 minutes.
   const running = [...jobs.values()].filter((j) => {
     if (!j.log) return false;
     try {
       const file = path.resolve(HUB, '..', j.log);
-      if (Date.now() - fs.statSync(file).mtimeMs > 15 * 60000) return false;
-      return !/^\[dispatch\] exit/m.test(fs.readFileSync(file, 'utf8'));
+      const text = fs.readFileSync(file, 'utf8');
+      if (/^\[dispatch\] exit/m.test(text)) return false;
+      const limit = text.includes('[interactive]') ? 100 * 1000 : 15 * 60000;
+      return Date.now() - fs.statSync(file).mtimeMs <= limit;
     } catch { return false; }
   });
 
@@ -55,6 +59,22 @@ function frame() {
   for (const j of running.slice(0, 12)) {
     const t = Date.parse(j.t) || j.started || now;
     out.push(`  ${String(j.executor || '?').padEnd(18)} ${String(j.taskId || j.task || '?').padEnd(28)} ${Math.round((now - t) / 60000)} min`);
+  }
+  // Finished agent windows still open: they wait for the owner to read them and ask for them to be closed.
+  const waiting = [];
+  try {
+    const hs = JSON.parse(fs.readFileSync(path.join(HUB, 'runs', 'herdr-state.json'), 'utf8'));
+    for (const [logFile, t] of Object.entries(hs.tabs || {})) {
+      if (!t.interactive || t.reopened) continue;
+      let text = '';
+      try { text = fs.readFileSync(logFile, 'utf8'); } catch { continue; }
+      if (/^\[dispatch\] exit/m.test(text)) waiting.push(t.label + '  finished ' + Math.round((Date.now() - fs.statSync(logFile).mtimeMs) / 60000) + ' min ago' + (/^\[reaper\]/m.test(text) ? '  (blocked)' : ''));
+    }
+  } catch {}
+  if (waiting.length) {
+    out.push('');
+    out.push(C.yellow + 'Finished, open for you to read (' + waiting.length + ')' + C.off + C.dim + '   tell the orchestrator to close them' + C.off);
+    for (const w of waiting.slice(0, 10)) out.push('  ' + w);
   }
   for (const [label, key, color] of [['Waiting for the orchestrator', 'REVIEW', 'yellow'], ['Sent back', 'REWORK', 'red'], ['Blocked', 'BLOCKED', 'red']]) {
     if ((by[key] || []).length) {

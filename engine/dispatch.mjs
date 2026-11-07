@@ -187,6 +187,7 @@ function makeExecutor(def) {
       if (!def.watch || def.watch === 'null') return null;
       return def.watch.replace(/\{sid\}/g, id ?? '');
     },
+    // Interactive arguments (a normal TUI session with the task as first message), only for executors that define them.
     interactive: (def.interactiveArgs ?? DEFAULT_INTERACTIVE_ARGS[def.name]) ? (msg, job, sid, opts = {}) => [def.buildCmd, fillArgs(def.interactiveArgs ?? DEFAULT_INTERACTIVE_ARGS[def.name], varsFor(msg, job, sid, opts))] : null,
     restore: def.restore ?? '',
   };
@@ -435,13 +436,31 @@ function openInHerdr(executor, base) {
 // Interactive mode: the agent runs as a normal session in its own Herdr tab, so the owner can read and talk to it.
 // Returns null (and the caller falls back to the hidden headless runner) when Herdr is off, unreachable, or the
 // executor has no interactive arguments. Reviews stay headless because their verdict file is extracted from the log.
+// History library: one line per agent session, so a closed agent window can be found and reopened later.
+function recordAgent(executor, ex, base, sid, mode, args) {
+  try {
+    const name = path.basename(base);
+    const clean = name.replace(/-mw[a-z0-9]+$/, '');
+    const f = path.join(HUB, 'history', 'agents.jsonl');
+    fs.mkdirSync(path.dirname(f), { recursive: true });
+    fs.appendFileSync(f, JSON.stringify({
+      t: new Date().toISOString(), id: name, executor, mode,
+      task: clean.replace(/^(builder-\d+-|review-)/, ''), builder: (clean.match(/^(builder-\d+)-/) || [])[1] || '',
+      startedAt: new Date().toISOString(), log: rel(base + '.log'), prompt: rel(base + '.prompt.md'), base: name,
+      sessionId: args && args.includes('--session-id') ? sid : null,
+      watchTpl: ex.watch ? ex.watch('{sid}') : null,
+    }) + '\n');
+  } catch {}
+}
+
 function launchInteractive(executor, ex, message, base, opts) {
   try {
     if (CFG.herdr?.enabled === false || CFG.herdr?.interactive === false || opts.review || !ex.interactive) return null;
     const bridge = path.join(ROOT, '.agent-hub', 'tools', 'herdr-bridge.mjs');
     if (!fs.existsSync(bridge)) return null;
     const abs = path.resolve(ROOT, base);
-    const [cmd, args] = ex.interactive(message, path.basename(base), crypto.randomUUID(), opts);
+    const sid = crypto.randomUUID();
+    const [cmd, args] = ex.interactive(message, path.basename(base), sid, opts);
     const name = path.basename(base).replace(/-mw[a-z0-9]+$/, '');
     const builder = (name.match(/^(builder-\d+)-/) || [])[1] || '';
     const task = name.replace(/^(builder-\d+-|review-)/, '');
@@ -450,7 +469,8 @@ function launchInteractive(executor, ex, message, base, opts) {
     fs.appendFileSync(`${abs}.log`, `[interactive] queued ${new Date().toISOString()}
 `);
     const r = spawnSync(process.execPath, [bridge, 'run', '--spec', specFile, '--log', `${abs}.log`, '--label', `${task} [${executor}]`], { cwd: ROOT, timeout: 30000, stdio: 'ignore', windowsHide: true });
-    return r.status === 0 ? { pid: null, sessionId: null } : null;
+    if (r.status === 0) { recordAgent(executor, ex, base, sid, 'interactive', args); return { pid: null, sessionId: null }; }
+    return null;
   } catch {
     return null;
   }
@@ -471,6 +491,7 @@ function launch(executor, message, base, opts = {}) {
   const runner = spawn(process.execPath, [fileURLToPath(import.meta.url), '_runner', `${base}.log`, JSON.stringify([cmd, args]), ...verdictArg], { cwd: runnerCwd, detached: true, stdio: 'ignore', windowsHide: true });
   runner.unref();
   openInHerdr(executor, base);
+  recordAgent(executor, ex, base, sid, opts.review ? 'review' : 'headless', args);
   return { pid: runner.pid, sessionId: args.includes('--session-id') ? sid : null };
 }
 

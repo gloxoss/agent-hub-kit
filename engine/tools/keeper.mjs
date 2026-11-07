@@ -90,7 +90,12 @@ function guardConfig() {
   try { fs.chmodSync(file, 0o444); } catch {}
 }
 
+let tickCount = 0;
 function cycle() {
+  // Watch the agent windows (this never closes them) and keep the session ids of open agents in the history library.
+  try { execFileSync('node', [HUB_REL + '/tools/herdr-bridge.mjs', 'reap'], { timeout: 60_000, stdio: 'ignore' }); } catch {}
+  tickCount += 1;
+  if (tickCount % 5 === 1) { try { execFileSync('node', [HUB_REL + '/tools/agent-history.mjs', 'discover'], { timeout: 90_000, stdio: 'ignore' }); } catch {} }
   guardConfig();
   const events = fs.readFileSync(path.join(HUB, 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
   const state = fold(events);

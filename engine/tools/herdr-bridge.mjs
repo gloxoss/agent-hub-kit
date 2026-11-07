@@ -11,6 +11,10 @@
 //   node .agent-hub/tools/herdr-bridge.mjs run --spec <file> --log <file> --label <text>   place the agent INTERACTIVELY (exit 3 = Herdr unavailable)
 //   node .agent-hub/tools/herdr-bridge.mjs watch --log <file> --label <text>   place a readable log view (never fails the caller)
 //   node .agent-hub/tools/herdr-bridge.mjs prune [--minutes N]   close log-view panes of jobs finished more than N minutes ago (default 30)
+//   node .agent-hub/tools/herdr-bridge.mjs reap       watch the windows: retire blocked ones in the hub, notify about finished or idle ones (never closes)
+//   node .agent-hub/tools/herdr-bridge.mjs close --finished | --failed | --task <id> | --pane <id>   close windows, only when the owner asks
+//   node .agent-hub/tools/herdr-bridge.mjs reopen <job id | task id>   bring a closed agent back (its own resume command)
+//   node .agent-hub/tools/herdr-bridge.mjs tell <task id | pane id> <message>   send a follow-up INTO that agent session (reopens it if closed): same context, no new run
 //   node .agent-hub/tools/herdr-bridge.mjs status
 //
 // Config (config.json, key "herdr"): enabled, interactive, workspaceLabel, panesPerTab (default 4), layout ("panes" | "tabs").
@@ -18,7 +22,7 @@
 // a missing Herdr must never stop a job. Interactive panes are never closed by the bridge: a conversation may be in progress.
 
 // --help guard (the kit self-test calls every tool with --help)
-if (process.argv.includes('--help') || process.argv.includes('-h')) { console.log('usage: herdr-bridge.mjs ensure [--open] [--soft] | run --spec <file> --log <file> --label <text> | watch --log <file> --label <text> | prune [--minutes N] | gather | status'); process.exit(0); }
+if (process.argv.includes('--help') || process.argv.includes('-h')) { console.log('usage: herdr-bridge.mjs ensure [--open] [--soft] | run --spec <file> --log <file> --label <text> | watch --log <file> --label <text> | prune [--minutes N] | gather | reap | close --finished | reopen <id> | tell <task> <message> | status'); process.exit(0); }
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -302,9 +306,195 @@ function gather() {
   return 0;
 }
 
+// ------------------------------------------------------------------------------------------------------------
+// Watching the agent windows. The bridge NEVER closes a window on its own: the owner reads the output first.
+//  - A window that hit a quota or login error is retired in the HUB (the log gets the error and the exit marker,
+//    so the hub moves the task to another agent) but the window stays open to read.
+//  - A finished window that stays open too long, or an agent idle for a long time, produces a notification.
+//  - Windows are closed only by `close`, which the owner asks for.
+// ------------------------------------------------------------------------------------------------------------
+const NOTES = path.join(HUB, 'runs', 'notifications.log');
+const REAP = CFG.reap ?? {};
+const MIN = {
+  errorIdle: Number(REAP.errorIdleMinutes ?? 2),
+  finishedNotify: Number(REAP.finishedNotifyMinutes ?? 10),
+  renotify: Number(REAP.renotifyMinutes ?? 60),
+  stalled: Number(REAP.stalledMinutes ?? 30),
+};
+const ERROR_PATTERNS = [
+  ['QUOTA', /weekly usage limit reached|usage limit reached|insufficient balance|out of credits|credit balance is too low|rate limit (reached|exceeded)|prepaid_balance_exhausted|exceeded your (current )?quota/i],
+  ['AUTH', /invalid api key|please run \/login|not logged in|api error: 40[13]|authentication (failed|error)/i],
+];
+
+async function history() {
+  try { return await import('./agent-history.mjs'); } catch { return null; }
+}
+
+function notify(title, body, key) {
+  try {
+    fs.mkdirSync(path.dirname(NOTES), { recursive: true });
+    fs.appendFileSync(NOTES, `${new Date().toISOString()} NOTIFY ${key} | ${title} | ${body}\n`);
+  } catch {}
+  try { herdr(['notification', 'show', title, '--body', body, '--sound', 'request', '--position', 'top-right']); } catch {}
+}
+
+function markExecutorDown(label, kind, line) {
+  const executor = String(label ?? '').match(/\[([^\]]+)\]\s*$/)?.[1];
+  if (!executor) return;
+  const file = path.join(HUB, 'runs', 'health.json');
+  try {
+    const h = JSON.parse(fs.readFileSync(file, 'utf8'));
+    h[executor] = { ok: false, problem: kind, at: Date.now(), detail: String(line).slice(0, 160) };
+    fs.writeFileSync(file, JSON.stringify(h, null, 2));
+  } catch {}
+}
+
+const sha = (s) => { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return String(h); };
+
+async function reap() {
+  if (!serverRunning()) return 0;
+  const state = readState();
+  if (!state.workspace_id) return 0;
+  reconcile(state, state.workspace_id);
+  const hist = await history();
+  const now = Date.now();
+  for (const [key, t] of Object.entries(state.tabs)) {
+    if (!t.interactive || t.reopened) continue;
+    const w = (t.watch ??= {});
+    let text = '';
+    try { text = String(herdr(['pane', 'read', t.pane_id, '--lines', '60'])?.raw ?? ''); } catch { continue; }
+    const h = sha(text);
+    if (h !== w.hash) { w.hash = h; w.changedAt = now; }
+    const idleMin = (now - (w.changedAt ?? now)) / 60000;
+    const done = finished(key);
+    const jobId = path.basename(key, '.log');
+
+    if (!done) {
+      // 1. blocked by a quota or login error: free the hub, keep the window
+      const tail = text.split('\n').slice(-25);
+      const hit = ERROR_PATTERNS.map(([kind, re]) => [kind, tail.find((l) => re.test(l))]).find(([, l]) => l);
+      if (hit && idleMin >= MIN.errorIdle && !w.errorHandled) {
+        const [kind, line] = hit;
+        w.errorHandled = true;
+        try { fs.appendFileSync(key, `\nERROR ${kind}: ${line.trim()}\n[reaper] ${t.label} stopped by ${kind}; the window stays open\n[dispatch] exit 1\n`); } catch {}
+        markExecutorDown(t.label, kind, line);
+        hist?.record({ id: jobId, endedReason: `error:${kind}`, endedAt: new Date().toISOString() });
+        notify(`${t.label}: ${kind}`, `Blocked (${kind}). The hub moves the task to another agent. This window stays open for you to read.`, `${jobId}:error`);
+        continue;
+      }
+      // 2. idle for a long time without finishing: it may be waiting for an answer
+      if (idleMin >= MIN.stalled && !w.stalledNotified) {
+        w.stalledNotified = true;
+        notify(`${t.label} is idle`, `No activity for ${Math.round(idleMin)} min. It may be waiting for you.`, `${jobId}:stalled`);
+      }
+      if (idleMin < MIN.stalled) w.stalledNotified = false;
+      continue;
+    }
+
+    // 3. finished and still open: remind the owner, never close it
+    if (!w.finishedAt) { try { w.finishedAt = fs.statSync(key).mtimeMs; } catch { w.finishedAt = now; } }
+    const since = (now - w.finishedAt) / 60000;
+    if (since >= MIN.finishedNotify && idleMin >= 1 && (!w.lastNotified || (now - w.lastNotified) / 60000 >= MIN.renotify)) {
+      w.lastNotified = now;
+      notify(`${t.label} finished ${Math.round(since)} min ago`, 'Still open for you to read. Close it yourself or ask the orchestrator to close it.', `${jobId}:finished`);
+    }
+  }
+  writeState(state);
+  return 0;
+}
+
+// Closes windows only when the owner asked: --finished, --task <id>, --pane <id>, --failed.
+async function closeWindows() {
+  if (!serverRunning()) { console.log('herdr: server not running'); return 1; }
+  const state = readState();
+  if (!state.workspace_id) return 0;
+  reconcile(state, state.workspace_id);
+  const hist = await history();
+  const task = arg('task');
+  const pane = arg('pane');
+  let closed = 0;
+  for (const [key, t] of Object.entries(state.tabs)) {
+    const done = finished(key);
+    const failed = done && /^\[reaper\]/m.test((() => { try { return fs.readFileSync(key, 'utf8'); } catch { return ''; } })());
+    const pick = (flag('finished') && done) || (flag('failed') && failed) || (task && String(t.label).startsWith(task)) || (pane && t.pane_id === pane);
+    if (!pick) continue;
+    const jobId = path.basename(key, '.log');
+    if (hist) {
+      const rec = hist.readAll().find((r) => r.id === jobId);
+      if (rec && !rec.sessionId) { const sid = hist.discover(rec); if (sid) hist.record({ id: jobId, sessionId: sid }); }
+      hist.record({ id: jobId, closedReason: 'owner', closedAt: new Date().toISOString() });
+    }
+    try { herdr(['pane', 'close', t.pane_id]); } catch {}
+    delete state.tabs[key];
+    closed++;
+    console.log(`closed ${t.label}`);
+  }
+  reconcile(state, state.workspace_id);
+  writeState(state);
+  console.log(`${closed} window(s) closed (history kept: node .agent-hub/tools/agent-history.mjs list)`);
+  return 0;
+}
+
+// Brings a closed agent back into the grid: opens a pane and runs the agent's own resume command.
+async function reopen() {
+  const hist = await history();
+  const wanted = rest.find((a) => !a.startsWith('--'));
+  if (!hist || !wanted) { console.log('usage: reopen <job id | task id>'); return 2; }
+  if (!serverRunning()) { console.log('herdr: server not running'); return 1; }
+  let rec = hist.readAll().find((r) => r.id === wanted) ?? hist.readAll().find((r) => r.task === wanted && r.mode !== 'review');
+  if (!rec) { console.log(`no history for "${wanted}"`); return 1; }
+  if (!rec.sessionId) { const sid = hist.discover(rec); if (sid) { hist.record({ id: rec.id, sessionId: sid }); rec = { ...rec, sessionId: sid }; } }
+  const command = hist.resumeCommand(rec);
+  const state = readState();
+  const { id } = ensureWorkspace(state);
+  const label = `${rec.task ?? rec.id} [${rec.executor}] (reopened)`;
+  const p = place(state, id, label);
+  runInPane(p.pane_id, command);
+  state.tabs[`reopen:${rec.id}:${Date.now()}`] = { tab_id: p.tab_id, pane_id: p.pane_id, at: Date.now(), label, interactive: true, reopened: true };
+  writeState(state);
+  console.log(`reopened ${label}: ${command}${rec.sessionId ? '' : '  (session id not found: pick the conversation from the list it shows)'}`);
+  return 0;
+}
+
+// Sends a follow-up message into the EXACT agent session that did the work (it keeps all its context), so nothing
+// is re-run and no context is injected again. If the window was closed it is reopened first from the history library.
+async function tell() {
+  const words = rest.filter((a) => !a.startsWith('--'));
+  const wanted = words[0];
+  const message = words.slice(1).join(' ').replace(/\s*\n\s*/g, ' ').trim();
+  if (!wanted || !message) { console.log('usage: tell <task id | pane id> <message>'); return 2; }
+  if (!serverRunning()) { console.log('herdr: server not running'); return 1; }
+  const findWindow = () => {
+    const state = readState();
+    reconcile(state, state.workspace_id);
+    const entries = Object.values(state.tabs).filter((t) => t.interactive && (t.pane_id === wanted || String(t.label).startsWith(`${wanted} `) || String(t.label) === wanted));
+    return entries.sort((a, b) => b.at - a.at)[0] ?? null;
+  };
+  let win = findWindow();
+  if (!win) {
+    console.log('window is closed, reopening the session from the history library...');
+    const rc = await reopen();
+    if (rc !== 0) return rc;
+    await new Promise((r) => setTimeout(r, 20000)); // let the agent start and load the conversation
+    win = findWindow();
+    if (!win) { console.log('could not find the reopened window'); return 1; }
+  }
+  herdr(['pane', 'send-text', win.pane_id, message]);
+  await new Promise((r) => setTimeout(r, 800));
+  herdr(['pane', 'send-keys', win.pane_id, 'Enter']);
+  const task = String(win.label).replace(/\s*\[.*$/, '');
+  try { execFileSync(process.execPath, [path.join(HUB, 'hub.mjs'), 'progress', task, '--agent', 'orchestrator', '--note', `Follow-up sent into the live agent session: ${message.slice(0, 300)}`], { cwd: ROOT, stdio: 'ignore', timeout: 20000 }); } catch {}
+  console.log(`sent to ${win.label} (${win.pane_id}); the note is recorded on the task`);
+  return 0;
+}
+
 let code = 0;
 try {
-  if (cmd === 'gather') code = gather();
+  if (cmd === 'tell') code = await tell();
+  else if (cmd === 'reap') code = await reap();
+  else if (cmd === 'close') code = await closeWindows();
+  else if (cmd === 'reopen') code = await reopen();
+  else if (cmd === 'gather') code = gather();
   else if (cmd === 'ensure') code = await ensure();
   else if (cmd === 'watch') code = watch();
   else if (cmd === 'run') code = runInteractive();
