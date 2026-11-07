@@ -68,4 +68,21 @@ if (!['index.json', 'INDEX.md', 'STARTER.md'].some((name) => fs.existsSync(path.
   if (result.status === 0) console.log(result.stdout.trim());
   else console.log('Skill index not built. Configure skillRoots, then run skills.mjs build.');
 }
+// Default way of working: open Herdr (one tab per agent, real agent windows) when a Claude Code session starts.
+{
+  const settings = path.join(TARGET, '.claude', 'settings.json');
+  let s = {};
+  try { s = JSON.parse(fs.readFileSync(settings, 'utf8')); } catch {}
+  s.hooks ??= {};
+  s.hooks.SessionStart ??= [];
+  if (JSON.stringify(s.hooks.SessionStart).includes('herdr-bridge')) {
+    console.log('SKIP  .claude/settings.json (Herdr hook already there)');
+  } else {
+    s.hooks.SessionStart.push({ hooks: [{ type: 'command', command: 'node ' + HUB_DIR + '/tools/herdr-bridge.mjs ensure --open --soft', timeout: 60 }] });
+    fs.mkdirSync(path.dirname(settings), { recursive: true });
+    fs.writeFileSync(settings, JSON.stringify(s, null, 2) + '\n');
+    console.log('OK    .claude/settings.json (Herdr session start hook)');
+  }
+}
+
 console.log('\nDone. Next:\n  cd "' + TARGET + '"\n  node ' + HUB_DIR + '/hub.mjs join --agent orchestrator --role orchestrator --tool claude\n  node ' + HUB_DIR + '/hub.mjs status\n  node ' + HUB_DIR + '/tools/skills.mjs build\nConfigure ' + HUB_DIR + '/config.json paths and executors before dispatch. Tutor: ' + HUB_DIR + '/tutor/TUTOR.md');

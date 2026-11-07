@@ -2,10 +2,10 @@
   "buildOrder": [
     "cursor",
     "opencode",
+    "opencode-ds",
     "agy",
     "claude-ag2-gemini",
-    "codex",
-    "claude-ds1"
+    "codex"
   ],
   "reviewOrder": [
     "cursor",
@@ -20,7 +20,7 @@
   "executors": [
     {
       "name": "agy",
-      "kind": "builder",
+      "kind": "both",
       "maxSessions": 5,
       "buildCmd": "agy",
       "buildExtraArgs": [
@@ -33,13 +33,29 @@
       "watch": "agy --conversation {sid}",
       "restore": "Check your Antigravity / Gemini quota, or switch model with --model.",
       "disabled": false,
-      "maxReviews": 2
+      "maxReviews": 2,
+      "reviewCmd": "agy",
+      "reviewExtraArgs": [
+        "-p",
+        "{msg}",
+        "--mode",
+        "plan",
+        "--output-format",
+        "stream-json",
+        "--dangerously-skip-permissions"
+      ],
+      "note": "Antigravity CLI. Add the project folder to trustedWorkspaces in ~/.gemini/antigravity-cli/settings.json. For several Google accounts set buildCmd/reviewCmd to \"agy-rotate\" (engine/tools/agy-rotate.mjs + agy-profiles.ps1, see references/executors.md section 6).",
+      "interactiveArgs": [
+        "--dangerously-skip-permissions",
+        "-i",
+        "{msg}"
+      ]
     },
     {
       "name": "opencode",
       "kind": "builder",
       "maxSessions": 6,
-      "model": "opencode/beam-free",
+      "model": "opencode-go/glm-5.3-flash",
       "buildCmd": "opencode",
       "buildExtraArgs": [
         "run",
@@ -53,7 +69,7 @@
         "{msg}"
       ],
       "watch": "opencode attach http://127.0.0.1:4096  (or: opencode -s {sid})",
-      "restore": "Check the opencode provider key and balance (opencode auth list).",
+      "restore": "Check the OpenCode Go subscription (opencode auth list).",
       "disabled": false,
       "maxReviews": 2,
       "reviewCmd": "opencode",
@@ -68,6 +84,54 @@
         "--title",
         "{job}",
         "{attach}",
+        "{msg}"
+      ],
+      "interactiveArgs": [
+        "-m",
+        "{model}",
+        "--prompt",
+        "{msg}"
+      ]
+    },
+    {
+      "name": "opencode-ds",
+      "kind": "builder",
+      "maxSessions": 6,
+      "model": "opencode-go/deepseek-v4.1-flash",
+      "buildCmd": "opencode",
+      "buildExtraArgs": [
+        "run",
+        "-m",
+        "{model}",
+        "--format",
+        "json",
+        "--title",
+        "{job}",
+        "{attach}",
+        "{msg}"
+      ],
+      "watch": "opencode attach http://127.0.0.1:4096  (or: opencode -s {sid})",
+      "restore": "Check the OpenCode Go subscription (opencode auth list).",
+      "disabled": false,
+      "maxReviews": 2,
+      "reviewCmd": "opencode",
+      "reviewExtraArgs": [
+        "run",
+        "--agent",
+        "audit",
+        "-m",
+        "{model}",
+        "--format",
+        "json",
+        "--title",
+        "{job}",
+        "{attach}",
+        "{msg}"
+      ],
+      "interactiveArgs": [
+        "-m",
+        "{model}",
+        "--prompt",
         "{msg}"
       ]
     },
@@ -343,7 +407,12 @@
       "watch": "codex resume {sid}",
       "restore": "Codex / ChatGPT usage limit: wait for the reset, or run codex login with another account.",
       "disabled": false,
-      "maxReviews": 2
+      "maxReviews": 2,
+      "interactiveArgs": [
+        "--sandbox",
+        "workspace-write",
+        "{msg}"
+      ]
     },
     {
       "name": "cursor",
@@ -352,6 +421,8 @@
       "buildCmd": "cursor-agent",
       "buildExtraArgs": [
         "-p",
+        "--model",
+        "grok-4.7-medium-fast",
         "--force",
         "--output-format",
         "stream-json",
@@ -360,6 +431,8 @@
       "reviewCmd": "cursor-agent",
       "reviewExtraArgs": [
         "-p",
+        "--model",
+        "grok-4.7-medium-fast",
         "--trust",
         "--output-format",
         "stream-json",

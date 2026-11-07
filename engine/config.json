@@ -3,13 +3,14 @@
   "backlogPath": "docs/BACKLOG.md",
   "commitTrailer": null,
   "digestMinutes": 20,
-  "opencodeModel": "opencode/beam-free",
+  "opencodeModel": "opencode-go/glm-5.3-flash",
   "hubDir": ".agent-hub",
   "kit": {
-    "version": "2.0.0",
+    "version": "2.3.0",
     "source": null
   },
   "skillRoots": [
+    ".agents/skills",
     ".claude/skills",
     "~/.claude/skills",
     "~/.agents/skills",
@@ -68,5 +69,13 @@
     "enabled": false,
     "base": "../{repo}-wt",
     "install": "auto"
+  },
+  "manualAccept": [],
+  "slowJobFloorMinutes": 90,
+  "herdr": {
+    "enabled": true,
+    "interactive": true,
+    "workspaceLabel": "",
+    "maxTabs": 14
   }
 }

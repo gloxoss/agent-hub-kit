@@ -105,3 +105,6 @@ Before you finish a turn, update `docs/HANDOFF.md` (create it if missing) with, 
 what is running, what waits for the user, the next 3 actions, and anything learned that is not
 yet in the brain. Durable lessons go in the brain as a note plus one line in `MEMORY.md`.
 The next agent, maybe a different model, continues from exactly this.
+
+## Herdr (default way of working with the owner)
+The owner watches the fleet in Herdr: workspace "<project> hub", a `board` tab and one tab per agent job. Builders run as real interactive sessions (the owner may type to them). Do not close those tabs. After you start jobs, say which tabs to look at. Status: `node <hub>/tools/herdr-bridge.mjs status`.

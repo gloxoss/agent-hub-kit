@@ -11,7 +11,7 @@ All commands below are the shapes `dispatch.mjs` builds for each entry. Placehol
 Two fixed orders, loaded from `executors.json`:
 
 - **Builds, strong first.** `claude-ag2-sonnet` → `claude-ds2` → `claude-ds3` → `claude-ds1` → `agy` → `opencode` → `cursor`. Start at the top; move a failed task down one entry.
-- **Reviews, healthy first.** `codex` → `claude-ag2-sonnet` → `claude-grok` (only when its launcher file exists) → `cursor` → `claude`. Always start with codex at low reasoning.
+- **Reviews, healthy first.** `codex` → `claude-ag2-sonnet` → `cursor` → `claude`. Always start with codex at low reasoning.
 
 An executor that reports QUOTA, AUTH or DOWN is skipped for one hour; the autoloop prints `MOVED` or `QUOTA` so the human sees the restore step.
 
@@ -30,10 +30,12 @@ Give a small-context executor a small task. One file, one narrow section, or one
 | `claude-ds3` | DeepSeek through the Claude Code CLI (second slot) | Same as ds2, extra parallelism | Same as ds2; same balance family as ds2 unless configured separately | 3 | builder |
 | `claude-ds1` | DeepSeek through the Claude Code CLI (first slot) | Builder plus acceptable reviewer; long-running lane | Same as ds2 | 3 | builder, reviewer |
 | `agy` | Gemini Flash on Antigravity | Fast and cheap; handles several small UI tasks in parallel | No review sandbox; less reliable on long instruction chains | 5 | builder |
-| `opencode` | Free model, `opencode/beam-free` unless `OPENCODE_MODEL` overrides (e.g. a DeepSeek or LongCat free model) | Many parallel sessions through one shared server; near-zero cost | Free models quit near ~140k tokens (the DeepSeek one often around 200k) and sometimes mistype paths (LongCat is the worst); small tasks only | 6 | builder |
+| `opencode` | OpenCode Go subscription, `opencode-go/glm-5.3-flash` unless `OPENCODE_MODEL` overrides (`opencode/beam-free` fails with AUTH on this setup) | Many parallel sessions through one shared server; near-zero cost | Free models quit near ~140k tokens (the DeepSeek one often around 200k) and sometimes mistype paths (LongCat is the worst); small tasks only | 6 | builder |
+| `opencode-ds` | Same as `opencode` on `opencode-go/deepseek-v4.1-flash` | Second Go lane, separate model | Same limits as `opencode`; small tasks only | 6 | builder |
+| `cursor` model | `grok-4.7-medium-fast` through `--model` in both build and review args | Without `--model`, cursor uses Composer | Change the model id in `executors.json`; list ids with `cursor-agent models` from PowerShell | - | - |
 | `claude-ag2-gemini` | Gemini through the Claude Code CLI | Cheap builder and reviewer for one-file tasks | Gemini rejects some Claude Code tool schemas; needs `--strict-mcp-config --tools`; cold proxy start is slow | 5 | both (small tasks) |
 | `codex` | GPT on a ChatGPT plan | Best reviewer: read-only sandbox, precise findings, writes its own verdict file | A 5-hour usage window; high reasoning drains it; build args exist but it is not in the build fallback | 2 | reviewer (builder only by choice) |
-| `claude-grok` | Claude Code on Grok through CLIProxyAPI | Useful reviewer and builder when Grok quota is healthy | Needs a user-made launcher; xAI account must stay authenticated | 2 | builder, reviewer |
+| `claude-grok` | Claude Code on Grok through CLIProxyAPI. Not selected: kept out of `buildOrder` and `reviewOrder` | Useful reviewer and builder when Grok quota is healthy | Needs a user-made launcher; xAI account must stay authenticated | 2 | builder, reviewer |
 | `cursor` | Cursor "Auto" | Builder and last-resort reviewer; one interactive setup | No session id to resume; reviews run with `--trust` so it cannot apply edits, builds with `--force`; the PowerShell wrapper makes a live job look dead | 3 | builder, reviewer |
 | `claude` | Claude via the Claude Code CLI (your own account) | Universal fallback; any task | Burns the orchestrator's own quota; one session only | 1 | last-resort builder or reviewer |
 
@@ -83,3 +85,13 @@ Jobs also stream to `.agent-hub/runs/<job>.log`. On Windows the follower is `Get
 - Do not judge an outage from words in a successful transcript (`lessons.md` 1.4).
 - Do not print the proxy management key, even in an error (`lessons.md` 2.5).
 - Do not run a reviewer with edit tools enabled, or a builder with a read-only sandbox.
+
+## 6. Routing rules and account rotation (added 2.1.0)
+
+**Routing by difficulty.** Hard, ambiguous or priority work: a strong executor (cursor, Sonnet). Bounded work with exact steps: agy or OpenCode flash. Browser verification: Gemini. Never one executor for everything. The same executor stalling twice on one task: change the executor.
+
+**OpenCode: flash models only.** Heavy models drain the plan and long multi-step briefs make flash models read files and quit without editing. Give OpenCode direct, small, single-area tasks with exact files and steps; planning and reasoning stay with the orchestrator and stronger agents. Record rules like this in a top-level `routingRules` string in executors.json so future sessions see them.
+
+**Antigravity proxy accounts.** The proxy already balances requests across all linked Google accounts (health, quota, token bucket); do not add a second rotator for the Claude-on-proxy launchers. View it with `engine/tools/accounts-status.mjs` and `engine/tools/accounts-quota.mjs` (live data from `GET <proxy>/account-limits?format=json`).
+
+**agy on Windows.** agy stores ONE Google login in Windows Credential Manager (target `gemini:antigravity`), so a separate HOME folder does not give a separate account. `engine/tools/agy-profiles.ps1` (alias it as `agys`) saves and swaps logins: `list` (emails, active, unsaved proxy accounts), `add`, `save`, `use`, `check`, `delete`, `quota`, `models`. `engine/tools/agy-rotate.mjs` runs agy with the next saved profile and skips one for 30 minutes when a limit or sign-in error appears before real output; it streams output and emits a JSON heartbeat every 60 s. Caveat: a swap changes the shared login, so avoid swaps while other agy jobs run. On Linux the same idea works with one HOME per profile (`~/.agy-profiles/<name>`).

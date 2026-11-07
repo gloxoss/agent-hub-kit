@@ -1,6 +1,6 @@
 ---
 name: agent-hub-orchestrator
-description: Runs a multi-agent build where this Claude session only plans, decides and commits, while external executor CLIs (agy, opencode, claude-ds1/2/3, claude-ag2-sonnet/gemini, cursor, codex, optional claude-grok) build and review through a file-based task hub with an autoloop (review, accept, rework, retry, queue). Covers installing it into any workspace (init.mjs with ui-migration, backend, ai or generic packs), writing briefs, the planner-to-gen-tasks pattern, quota audits, reviewer fallback, pausing and resuming a project. Use when the user says "set up the agent hub", "you orchestrate, other agents execute", "use my other agents", "dispatch this to agy/opencode/codex/cursor", or starts a new multi-agent project.
+description: Runs a multi-agent build where this Claude session only plans, decides and commits, while external executor CLIs (agy, opencode, opencode-ds, claude-ds1/2/3, claude-ag2-sonnet/gemini, cursor, codex) build and review through a file-based task hub with an autoloop (review, accept, rework, retry, queue). Covers installing it into any workspace (init.mjs with ui-migration, backend, ai or generic packs), writing briefs, the planner-to-gen-tasks pattern, quota audits, reviewer fallback, pausing and resuming a project. Use when the user says "set up the agent hub", "you orchestrate, other agents execute", "use my other agents", "dispatch this to agy/opencode/codex/cursor", or starts a new multi-agent project.
 ---
 
 # agent-hub-orchestrator
@@ -14,11 +14,13 @@ Load this skill at the start of any orchestrator session. Workers and verifiers 
 | Role | Who | Does | Never |
 |---|---|---|---|
 | **Orchestrator** | Main Claude session | Plans, writes briefs, queues, reviews diffs, accepts, commits | Edits source files |
-| **Worker** | External executor (Codex, opencode, agy, Claude subagent) | Claims, builds, proves, reports | Commits, verifies own work |
+| **Worker** | External executor (Codex, opencode, agy, non-Opus Claude subagent) | Claims, builds, proves, reports | Commits, verifies own work |
 | **Verifier** | Separate executor (optional) | Runs proof, runs gates, writes report | Fixes code |
 | **Autoloop** | `autoloop.mjs` process | Starts reviews, accepts passes, sends back fails, retries | Makes judgement calls |
 
 **Orchestrator never does worker work.** Workers run on external quota (Codex, opencode, agy, DeepSeek slots, Cursor). Spending orchestrator tokens on building or routine review burns the plan quota instead.
+
+**No Opus subagents, ever.** The orchestrator never spawns a subagent on an Opus model. Omitting `model` inherits the session model, so every Agent call sets `model` explicitly to `sonnet` or `haiku`, or the work goes to an external executor through the hub. The same holds for skills that spawn subagents, such as ultraplan. The `claude` executor runs on Opus: keep it out of `buildOrder` and `reviewOrder`.
 
 ## The loop
 ```
@@ -159,3 +161,12 @@ Commands (`node .agent-hub/tools/kit-sync.mjs`):
 **Autoloop hook (document only; engine owns autoloop):** the digest tick can call `kit-sync.mjs check --quiet` and print its line. DIGEST output containing `KIT-UPGRADE` wakes the orchestrator the same way other digest signals do.
 
 **Keep up to 5 agents busy (user rule, 2026-10-25), always inside the resource gates:** do not leave capacity idle while dispatchable work exists, but never bypass the free-RAM floor (resources.buildMinFreeMB) or the quota-burn breaker to reach 5. On a small host fewer than 5 is correct. Keep ≥5 dispatchable OPEN tasks queued beyond the running ones (write the next briefs from the plan before the queue drains; audits/QA passes are fillers). On every accept/done/fail/exit event, count running jobs across active hubs and dispatch the next task immediately until ≥5 run. After a restart, restore infrastructure, then bring the count to ≥5 first.
+
+## Default way of working: Herdr
+This is how the owner works with the hub, on every project scaffolded from this kit.
+1. **Session start.** `init.mjs` installs a SessionStart hook in the project's `.claude/settings.json`. It runs `node <hub>/tools/herdr-bridge.mjs ensure --open --soft`, which opens Herdr in Windows Terminal when it is not running and prepares one workspace (`<project> hub`) with a `board` tab (live task counts, running jobs, last events).
+2. **Every agent job gets its own tab.** `dispatch.mjs` starts builders of executors that define `interactiveArgs` (agy, opencode, opencode-ds, codex) as a normal interactive session with the task as first message (`tools/interactive-run.mjs`). The owner reads the agent and talks to it. Reviews and other executors run headless and get a readable log tab (`tools/job-view.mjs`).
+3. **The hub still knows when a job is done**: heartbeat lines keep it alive, the builder's `leave` event closes it, and the window stays open for the owner.
+4. **Switches** in `config.json`: `herdr.enabled`, `herdr.interactive` (false = hidden headless runs with log tabs), `herdr.workspaceLabel`, `herdr.maxTabs`. If Herdr is missing or unreachable, jobs fall back to headless and nothing breaks.
+5. **Commands:** `node <hub>/tools/herdr-bridge.mjs status | ensure | prune`.
+6. Orchestrator duty: when you start jobs, tell the owner which tabs to look at; do not close interactive tabs; keep at least two build executors in `buildOrder` so a quota stop never relaunches the same executor.

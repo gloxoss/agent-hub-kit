@@ -10,6 +10,8 @@ The orchestrator plans and audits; workers build; verifiers check. Nobody grades
 | Worker | `builder-N`, or an external agent | Claims an assigned task, follows its brief, proves the result, reports with `done` | Works without a claim, edits outside the claim, commits, verifies its own task |
 | Verifier | `verifier-N` | Re-runs the proof, runs gates, compares with the source, writes a report, `verify --ok` or `--fail` | Fixes code. Verifies a task it did. |
 
+**No Opus subagents, ever.** The orchestrator never spawns a subagent on an Opus model. Omitting `model` inherits the session model, so every Agent call sets `model` explicitly to `sonnet` or `haiku`, or the work goes to an external executor through the hub. The same holds for skills that spawn subagents, such as ultraplan. The `claude` executor runs on Opus: keep it out of `buildOrder` and `reviewOrder`.
+
 ## Lifecycle
 
 ```

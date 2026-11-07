@@ -131,3 +131,6 @@ node .agent-hub/tools/kit-sync.mjs pull --yes               # MASTER-NEWER → i
 ```
 
 Orchestrator: run `check` at session start, after tool fixes, and when a DIGEST shows `KIT-UPGRADE`. Then `propose`, ask once, and only on yes `apply --yes` (then commit in the master repo with the printed commands). `MASTER-NEWER` includes master-only files. See `templates/KIT-SYNC.md`.
+
+## Herdr (default)
+Agent jobs open as real interactive sessions in Herdr tabs, with a live board tab, started by a Claude Code session hook. See SKILL.md, section "Default way of working: Herdr".

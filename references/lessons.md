@@ -195,3 +195,73 @@ Format: symptom, cause, fix. Entries are grouped by the part of the loop they co
 - **Shared opencode server is a single point of failure.** Symptom: every attached opencode job fails at once with ECONNRESET, misread as QUOTA, and opencode gets parked. Cause: the `opencode serve` window was interrupted. Fix: run opencode jobs standalone by default; use the server only for watching, and never classify ECONNRESET as quota.
 
 - **Tailwind arbitrary selectors with an escaped slash break the whole CSS build.** Symptom: "Parsing CSS source code failed ... Unexpected token Delim(/)" on every page. Cause: a class like `[&_.group\/media]:h-[240px]` in a JS string (Tailwind scans the raw source). Fix: target a data attribute instead (`[&_[data-media]]`), and restart the dev server with a clean cache because the error stays cached.
+
+
+---
+
+## Added in 2.1.0 (from a long multi-agent session)
+
+### A wrapper that buffers output makes healthy jobs look dead
+**Symptom.** A job's log stays at 0 KB for 15+ minutes although the agent is editing files.
+**Cause.** A launcher wrapper (account rotation) collected the agent's output and printed it only at exit.
+**Fix.** Wrapper output must be streamed. Hold back only the first few KB to decide whether a limit error appeared before real output, then stream. Emit a periodic heartbeat line. Require `[WORKING]` lines in the worker and review prompts (templates now include a HEARTBEAT RULE).
+
+### A reviewer-accepted task can still be wrong
+**Symptom.** A task passes review and is committed, but the result is a simplified copy of an approved design, or six items "done" in 13 minutes.
+**Cause.** The reviewer checks the brief's wording and the diff, not the approved artifact or the running page.
+**Fix.** Verify user-visible work in a real browser against the approved artifact, and run read-only verification tasks that mark each brief item DONE / PARTIAL / MISSING with file:line and run the real linters and tests.
+
+### Flash models given long briefs read and quit
+**Symptom.** An OpenCode flash run makes ~20 read calls, then exits with no edits.
+**Fix.** Give flash models direct, single-area tasks with exact files and steps; split or reroute anything open-ended (see references/executors.md section 6).
+
+### Single-login CLIs ignore HOME isolation on Windows
+**Symptom.** A fresh HOME folder is still signed in as the same Google account.
+**Cause.** The CLI keeps its login in the Windows Credential Manager, not in its home folder.
+**Fix.** Swap the credential entry (engine/tools/agy-profiles.ps1) or run the agent on Linux with per-profile HOME.
+
+### Untrusted workspace can stall a headless agent
+**Symptom.** A job sits with almost no CPU and no edits.
+**Fix.** Add the project folder to the CLI's trusted workspaces before dispatching; verify with a heartbeat or log growth within 2 minutes.
+
+### Everything dies on reboot
+**Fix.** Keep a restart checklist: proxy, dev server, database/CMS app (the user presses Start), container runtime then notifier, autoloop, watchers; remove stale locks; redispatch each unfinished task with a RESUME note (see skill hub-kit-operate).
+
+## Lessons from MoreneParfums (2026-11-06)
+
+- **Skills outside the workspace kill opencode lanes.** opencode auto-rejects any read or write outside the repo (`external_directory`) and ends the whole turn with exit 0, so the job shows DONE while nothing was done. Workers must read skills from `skills-cache/` (staged inside the repo by `dispatch`), never from `~/.claude/skills` or a skills library. The worker prompt needs the `{{skills}}` block and the "4b. Read every skill file listed above" step, and each brief needs a real `## Skills` section with lines like `- \`name\`: why`. A "Skills: a, b" line inside the brief body stages nothing.
+- **Add the repo's own skill folder to `skillRoots`** (`.agents/skills`). Project-specific skills such as the Medusa set live there and are invisible to the index otherwise.
+- **opencode lanes also cannot read `.env*`** and cannot write to `/tmp`. Do not put `.env*` files in the scope of an opencode task and do not ask it to query the network.
+- **A job that exits 0 without `done` is not a success.** Check the task state, the diff and the log before trusting `DONE`.
+- **Synced folders (OneDrive) can lock `autoloop-state.json`.** The write failed with `UNKNOWN` and killed the loop while detached jobs kept running. `save()` now retries and never throws. Prefer keeping `.agent-hub` outside a synced folder.
+- **Per-task manual acceptance.** `config.manualAccept` lists task ids for which the autoloop stops at "review passed" (`MANUAL-ACCEPT` line) so the orchestrator accepts by hand: money, stock, security, deploy.
+- **The first autoloop tick re-tries every task whose last job failed and marks those executors down for `cooldownMinutes`.** After a model or executor change, old failed jobs can mark a healthy lane down for an hour.
+- **An empty `.agent-hub/accounts.json` (`[]`)** is required when `accounts.example.json` ships with the engine, otherwise the picker can route to an executor you excluded.
+- **Verify image tags before briefing a task.** `docker manifest inspect <image>` (control with a known image first). `minio/minio` is no longer pullable from Docker Hub or quay.io.
+- **Start the autoloop detached from the orchestrator session.** Run through a tool-managed background task it was stopped silently (exit 1, no error) while its detached jobs kept running. On Windows use `Start-Process node ... -WindowStyle Hidden` with stdout and stderr redirected to separate files.
+- **Dev-mode backend restarts on every saved file.** With several builders editing `src/`, `/health` is down for about a minute after each save and builder proofs can fail for nothing. Retry before treating it as a break.
+- **The autoloop kills jobs it calls slow (> 2x median, minimum 20 min) and its medians can be garbage.** After a long pause the stats held 28,000-minute medians, and with one sample per executor every build over 20 minutes was killed and re-dispatched in a loop. Now `slowJobFloorMinutes` (90) sets a floor and a median above `maxJobMinutes` is ignored. A mass drop in memory use plus several `MOVED ...: slow` lines means this rule fired. The engine has TWO copies of this rule (one on `j.started`, one on `j.t` near the end of `tick`): patch both, then restart the autoloop, because a running process keeps the old code. Check the effective floor with a job that is killed at exactly 20 minutes.
+- **Medusa integration tests in a container: use a DB host that contains `localhost`** (for example `postgres.localhost`, aliased to the postgres service). Medusa test-utils forces SSL otherwise and the run fails with `The server does not support SSL connections` or hangs for the 300 s hook timeout.
+- **Builders improvise credentials.** One created a secret admin API key to get past the 2FA guard (it revoked it). State in the brief: never create keys, users or test records without deleting them, never bypass 2FA.
+- **Freeing a lane by killing a job**: the hub keeps showing the job RUNNING until its log has a `[dispatch] exit` line or goes quiet for `RECENT_MS`. After `taskkill /T /F` on the job's tree, append `[dispatch] exit 143` to its log, then `hub kick <lane>`. Otherwise supervisors think the lane is still busy.
+- **A rework that needs a new file needs a wider scope first.** Workers claim only the files in the task scope and stop (correctly) when the orchestrator's rework asks for a test or helper outside it. Widen with `hub edit TASK --scope a,b` before sending a rework that creates files. Never put helper files in `src/jobs/` (Medusa loads each one as a job).
+- **Another session can overwrite `.agent-hub/config.json` with an old copy.** It once dropped `manualAccept`, `keeper` and `slowJobFloorMinutes`, and the autoloop then tried to accept sensitive tasks alone. Keep `config.good.json`, make `config.json` read-only, and let `keeper.mjs` restore missing keys (`KEEPER-CONFIG-LOST`).
+- **Agents restart shared containers.** An agent ran `docker restart medusa_backend` to load new routes and killed another agent's (and the orchestrator's) integration test (exit 137, no error text). The dev server hot-reloads, so the prompt now forbids restart/stop/recreate of any shared container; if a run dies with 137, check `docker events --since 15m --filter container=<name>` before blaming memory.
+- **`cat file | docker exec -i ... pg_restore --list` under `set -o pipefail` fails at random.** pg_restore stops reading after the table of contents, `cat` gets SIGPIPE and the pipeline counts as failed depending on timing (2 of 4 runs deleted a good backup). Read with a redirection (`< file`) instead of a pipe into docker, and never delete a dump pg_dump produced successfully. A backup task is only proven by several consecutive runs plus a restore that compares every table, not by one lucky run.
+
+## Herdr interactive mode (2026-11-07)
+- The owner wants to SEE and TALK to each agent, not read a log. Reading a log tab was the first attempt and was rejected. The accepted design is a real interactive session per job in its own Herdr tab.
+- An interactive agent never exits by itself, so the hub cannot rely on the process ending. The wrapper writes a heartbeat to the log and writes the "[dispatch] exit" marker when the builder writes its `leave` event. The window stays open after that.
+- The session screen is not captured: quota or login problems appear in the pane but not in the hub's diagnosis. Headless mode (`herdr.interactive: false`) keeps the diagnosis.
+- Never let the bridge auto-close an interactive tab: it would kill a conversation the owner may be in.
+- Herdr CLI: `workspace create`, `tab create --workspace --label --cwd`, `pane run <pane> <command>`, `pane read`. Its own skill says to control it only from inside a Herdr pane; the hub bridge is the owner's explicit integration, started by the owner's session hook.
+- On Windows, start it in Windows Terminal with a plain title (`--title MoreneHub`): a title with spaces or brackets is split into arguments and the launch fails.
+
+## Quota loop with a single builder (2026-11-07)
+- With `buildOrder: [cursor]` and the weekly limit reached, the autoloop logged "cursor failed (QUOTA), now on cursor" about 35 times, relaunching a paid executor each time. Rule: when the next healthy executor is the one that just failed on QUOTA, AUTH or DOWN, hold the task and say so. Keep at least two build executors in `buildOrder`.
+
+## Tool escaping of backslashes (2026-11-07)
+- When a command string is passed through the agent shell tool, a double backslash can collapse to one and a single one can vanish. A regex written as `/^(builder-\\d+)-/` ended up as `/^(builder-d+)-/` and matched nothing. Build such patterns with `String.fromCharCode(92)` or put the code in a file written with the Write tool, then test the regex on a sample value.
+
+## Config files rewritten behind your back (2026-11-07)
+- config.json and executors.json were rewritten by something outside the hub (another editor or session) a few minutes after a commit and lost the new interactive settings. The first Codex job then fell back to hidden mode. Rule: put new behaviour that must survive in code defaults (here DEFAULT_INTERACTIVE_ARGS, and only an explicit false turns Herdr or interactive mode off), not only in the JSON config. After any config change, verify with git diff and with one real job.

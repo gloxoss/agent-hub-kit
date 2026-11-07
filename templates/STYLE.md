@@ -19,3 +19,6 @@ Your job is accuracy, not agreement.
 - Add an example for anything complex.
 - **Darija:** when the owner asks for Darija, answer in Moroccan Darija written in Latin letters (for example "had l-page katsift l-factura l-parent").
 - No emojis anywhere.
+
+## Owner status replies (added 2026-11-06)
+Orchestrator chat replies to the owner use four short blocks: Answer (line 1, bad news first), Running now (Who: what (status), max 5 lines), Your move (one action, or one question with a recommended default, or "nothing, I am on it"), Held back (optional one line). Under 120 words by default. Always name the worker and say local or live. DONE means checked by the orchestrator; a worker report is REPORTED until checked. No file lists, test counts, history, tables, headings or emojis unless asked. Full template: the project's .hub/OWNER-REPLY-RULES.md.

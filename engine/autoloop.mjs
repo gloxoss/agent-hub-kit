@@ -242,7 +242,18 @@ const load = () => { try { return JSON.parse(fs.readFileSync(STATE, 'utf8')); } 
 // Retry-type keys expire after 30 min so a stuck task is retried instead of silently parked.
 const EXPIRE = /^(retry|queue|rework|resume|review|accept|blocked-review):/;
 const prune = (s) => { for (const [k, at] of Object.entries(s.handled)) if (EXPIRE.test(k) && Date.now() - at > (k.startsWith('queue:') ? (CFG.queueRetryMinutes ?? 10) : 30) * 60_000) delete s.handled[k]; return s; };
-const save = (s) => DRY || fs.writeFileSync(STATE, JSON.stringify(s, null, 1));
+// Sync folders (OneDrive, Dropbox) can lock a file that is rewritten every tick and make the open fail with UNKNOWN/EBUSY/EPERM.
+// Retry briefly, and never let a failed save kill the loop: the next tick writes the same state again.
+const save = (s) => {
+  if (DRY) return;
+  const body = JSON.stringify(s, null, 1);
+  for (let i = 0; i < 6; i++) {
+    try { fs.writeFileSync(STATE, body); return; } catch (e) {
+      if (i === 5) { say(`STATE SAVE FAILED ${e.code || e.message} (will retry next tick)`); return; }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250 * (i + 1));
+    }
+  }
+};
 
 function tasks() {
   const t = {};
@@ -380,7 +391,11 @@ function tick(st) {
     const key = `${j.executor}:${phase}`;
     const arr = durationsData.durations?.[key] || [];
     const med = median(arr);
-    const thresholdMin = med !== null ? Math.max(20, 2 * med) : 45;
+    // Medians come from few runs and can be nonsense (a pause between sessions once produced 28,000 minutes), so a floor applies
+    // and a median above the hard job limit is ignored. Long, legitimate builds are only stopped by dispatch's maxJobMinutes.
+    const floorMin = CFG.slowJobFloorMinutes ?? 20;
+    const trusted = med !== null && med < (CFG.resources?.maxJobMinutes ?? 90);
+    const thresholdMin = trusted ? Math.max(floorMin, 2 * med) : Math.max(floorMin, 45);
 
     if (elapsedMin > thresholdMin) {
       once(`slow:${j.id}`, () => {
@@ -446,6 +461,11 @@ function tick(st) {
         if (rv) once(`review:${t.id}:${t.doneAt}:${Math.floor(Date.now() / 600_000)}`, () => run([`${HUB}/dispatch.mjs`, 'review', t.id, rv]));
         continue;
       }
+      if (r.status === 'VERDICT: PASS' && (CFG.manualAccept ?? []).includes(t.id)) {
+        // Sensitive tasks (money, stock, security, deploy): the review passed, the orchestrator accepts by hand.
+        once(`manual:${r.name}`, () => say(`MANUAL-ACCEPT ${t.id}: review ${r.name} passed, orchestrator accepts by hand`));
+        continue;
+      }
       if (r.status === 'VERDICT: PASS') {
         once(`accept:${r.name}`, () => {
           const media = t.scope.filter((s) => s.startsWith('public/')).join(',');
@@ -509,6 +529,11 @@ function tick(st) {
         if (/QUOTA|AUTH|DOWN/.test(b.status)) say(`QUOTA ${b.executor}: ${b.status} (build ${t.id})`);
         st.down[b.executor] = Date.now();
         const next = nextHealthy(BUILD_FALLBACK, b.executor);
+        // Never relaunch on an executor that just ran out of quota: with a single builder this loop drained a paid plan.
+        if (next === b.executor && /QUOTA|AUTH|DOWN/.test(b.status)) {
+          say(`HOLD ${t.id}: ${b.executor} is out (${b.status}) and no other builder is up; not relaunching`);
+          return;
+        }
         run([`${HUB}/dispatch.mjs`, 'run', next, b.lane, t.id]);
         say(`MOVED ${t.id}: ${b.executor} failed (${b.status}), now on ${next}`);
       });
@@ -543,7 +568,10 @@ function tick(st) {
     const medianVal = getMedian(j.executor, phase);
     const defaultMedian = 45;
     const baseMedian = medianVal !== null ? medianVal : defaultMedian;
-    const limit = Math.max(20, 2 * baseMedian);
+    // Same floor and sanity check as the first slow-job rule: a median above the hard job limit is ignored.
+    const floorMin2 = CFG.slowJobFloorMinutes ?? 20;
+    const trusted2 = medianVal !== null && medianVal < (CFG.resources?.maxJobMinutes ?? 90);
+    const limit = trusted2 ? Math.max(floorMin2, 2 * medianVal) : Math.max(floorMin2, defaultMedian);
 
     if (ageMin >= limit) {
       once(`slow:${j.id}:${Math.floor(Date.now() / 300_000)}`, () => {

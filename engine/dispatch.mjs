@@ -153,6 +153,15 @@ function fillArgs(template, vars) {
   return out;
 }
 
+// Built-in interactive arguments. They apply when executors.json defines none, so a rewritten config cannot
+// silently turn the interactive agent windows off. executors.json can still override them per executor.
+const DEFAULT_INTERACTIVE_ARGS = {
+  agy: ['--dangerously-skip-permissions', '-i', '{msg}'],
+  opencode: ['-m', '{model}', '--prompt', '{msg}'],
+  'opencode-ds': ['-m', '{model}', '--prompt', '{msg}'],
+  codex: ['--sandbox', 'workspace-write', '{msg}'],
+};
+
 function makeExecutor(def) {
   const model = process.env.OPENCODE_MODEL || def.model || CFG.opencodeModel || 'opencode/beam-free';
   const usesAttach = [...(def.buildExtraArgs ?? []), ...(def.reviewExtraArgs ?? [])].some((a) => a.includes('{attach}'));
@@ -170,6 +179,7 @@ function makeExecutor(def) {
       if (!def.watch || def.watch === 'null') return null;
       return def.watch.replace(/\{sid\}/g, id ?? '');
     },
+    interactive: (def.interactiveArgs ?? DEFAULT_INTERACTIVE_ARGS[def.name]) ? (msg, job, sid, opts = {}) => [def.buildCmd, fillArgs(def.interactiveArgs ?? DEFAULT_INTERACTIVE_ARGS[def.name], varsFor(msg, job, sid, opts))] : null,
     restore: def.restore ?? '',
   };
 }
@@ -398,9 +408,51 @@ function diagnose(text) {
   return null;
 }
 
+// Shows the job in its own Herdr tab (live, readable) when Herdr runs and config.herdr.enabled is true.
+// Fire and forget: a missing Herdr or any error here must never stop a job.
+function openInHerdr(executor, base) {
+  try {
+    if (CFG.herdr?.enabled === false) return;
+    const name = path.basename(base).replace(/-mw[a-z0-9]+$/, '');
+    const isReview = name.startsWith('review-');
+    const task = name.replace(/^(builder-\d+-|review-)/, '');
+    const label = isReview ? `review ${task}` : `${task} [${executor}]`;
+    const bridge = path.join(ROOT, '.agent-hub', 'tools', 'herdr-bridge.mjs');
+    if (!fs.existsSync(bridge)) return;
+    const logRel = `${base}.log`;
+    spawn(process.execPath, [bridge, 'watch', '--log', logRel, '--label', label], { cwd: ROOT, detached: true, stdio: 'ignore', windowsHide: true }).unref();
+  } catch {}
+}
+
+// Interactive mode: the agent runs as a normal session in its own Herdr tab, so the owner can read and talk to it.
+// Returns null (and the caller falls back to the hidden headless runner) when Herdr is off, unreachable, or the
+// executor has no interactive arguments. Reviews stay headless because their verdict file is extracted from the log.
+function launchInteractive(executor, ex, message, base, opts) {
+  try {
+    if (CFG.herdr?.enabled === false || CFG.herdr?.interactive === false || opts.review || !ex.interactive) return null;
+    const bridge = path.join(ROOT, '.agent-hub', 'tools', 'herdr-bridge.mjs');
+    if (!fs.existsSync(bridge)) return null;
+    const abs = path.resolve(ROOT, base);
+    const [cmd, args] = ex.interactive(message, path.basename(base), crypto.randomUUID(), opts);
+    const name = path.basename(base).replace(/-mw[a-z0-9]+$/, '');
+    const builder = (name.match(/^(builder-\d+)-/) || [])[1] || '';
+    const task = name.replace(/^(builder-\d+-|review-)/, '');
+    const specFile = `${abs}.spec.json`;
+    fs.writeFileSync(specFile, JSON.stringify({ cmd, args, cwd: opts.cwd || ROOT, log: `${abs}.log`, builder, task, startedAt: Date.now() }));
+    fs.appendFileSync(`${abs}.log`, `[interactive] queued ${new Date().toISOString()}
+`);
+    const r = spawnSync(process.execPath, [bridge, 'run', '--spec', specFile, '--log', `${abs}.log`, '--label', `${task} [${executor}]`], { cwd: ROOT, timeout: 30000, stdio: 'ignore', windowsHide: true });
+    return r.status === 0 ? { pid: null, sessionId: null } : null;
+  } catch {
+    return null;
+  }
+}
+
 function launch(executor, message, base, opts = {}) {
   const ex = EXECUTORS[executor];
   if (!ex) throw new Error(`unknown executor "${executor}". Known: ${Object.keys(EXECUTORS).join(', ')}`);
+  const interactive = launchInteractive(executor, ex, message, base, opts);
+  if (interactive) return interactive;
   const sid = crypto.randomUUID();
   const [cmd, args] = ex.build(message, path.basename(base), sid, opts);
   // On Windows these CLIs write nothing when a file is attached directly as their stdout, but they do
@@ -410,6 +462,7 @@ function launch(executor, message, base, opts = {}) {
   const runnerCwd = opts.cwd || ROOT;
   const runner = spawn(process.execPath, [fileURLToPath(import.meta.url), '_runner', `${base}.log`, JSON.stringify([cmd, args]), ...verdictArg], { cwd: runnerCwd, detached: true, stdio: 'ignore', windowsHide: true });
   runner.unref();
+  openInHerdr(executor, base);
   return { pid: runner.pid, sessionId: args.includes('--session-id') ? sid : null };
 }
 
