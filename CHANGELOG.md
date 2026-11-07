@@ -1,6 +1,8 @@
 # Changelog
 
 ## 2.4.0 (2026-11-07)
+- **Perch CLI executors.** `perch` and `perch-rot` (off, `maxSessions: 0`) run `perch run "{msg}" --mode agents --json` (npm `perchai-cli`). The login is Google or GitHub in a browser, so the owner runs `perch login` once; then `dispatch.mjs ping perch` and raise `maxSessions`. `perch-rot` rotates saved logins through agent-accounts (provider `perch`, one folder per account through `PERCH_CLI_AUTH_DIR`). Written from the CLI help and code, not yet proven with a signed-in account.
+- **Free OpenCode executor.** `opencode-free` (model `opencode-go/beam-free`). Tested 2026-11-07: `crouton-alpha-free` unavailable, `iceman-contributor-free` asks to allow training on your data (left off), the `opencode/*-free` models need a valid OpenCode Zen key.
 - **Finished windows are handled after 5 quiet minutes.** `herdr-bridge.mjs reap`: a finished window the owner did not touch for `reap.autoActionMinutes` (default 5, 0 turns it off) is closed when the task is done in the hub (session kept in the history library), or asked to continue in its own session when the task is still ASSIGNED, REWORK, OPEN or CLAIMED. After `reap.maxContinues` (default 2) attempts it closes and the keeper takes over.
 - **"Untouched" ignores timers.** The idle check hashes the window text without digits and spinner characters; a ticking clock no longer makes a finished window look busy.
 - **One launcher only.** When the reaper closes a failed window it records the reason and frees the builder; the keeper alone restarts the task. Two launchers racing for one task made a second agent start, find the claim held, and quit.

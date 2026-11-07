@@ -698,6 +698,45 @@
       "watch": "agy --conversation {sid}",
       "restore": "All agy accounts are out of credits: agent-accounts status. Check the Antigravity usage page for the reset.",
       "note": "Rotates between saved accounts with agent-accounts (https://github.com/gloxoss/agent-accounts). Off until you save accounts: agent-accounts import <provider> <name>, then raise maxSessions."
+    },
+    {
+      "name": "perch",
+      "kind": "builder",
+      "maxSessions": 0,
+      "buildCmd": "perch",
+      "buildExtraArgs": [
+        "run",
+        "{msg}",
+        "--mode",
+        "agents",
+        "--json",
+        "--cwd",
+        "."
+      ],
+      "watch": "perch (interactive chat) or perch run --thread {sid}",
+      "restore": "Not signed in or out of credits: run perch status, then perch login.",
+      "note": "Perch CLI (npm perchai-cli). Off until the owner has run `perch login` (Google or GitHub, in a browser). Written from its help text on 2026-11-07 and not yet proven with a signed-in account: ping it with `dispatch.mjs ping perch`, then raise maxSessions."
+    },
+    {
+      "name": "perch-rot",
+      "kind": "builder",
+      "maxSessions": 0,
+      "buildCmd": "agent-accounts",
+      "buildExtraArgs": [
+        "run",
+        "perch",
+        "--",
+        "run",
+        "{msg}",
+        "--mode",
+        "agents",
+        "--json",
+        "--cwd",
+        "."
+      ],
+      "watch": "agent-accounts resume perch {sid}",
+      "restore": "All Perch accounts are out: agent-accounts status. Add one: agent-accounts add perch <name>.",
+      "note": "Rotates between saved Perch logins with agent-accounts (provider perch, folder per account through PERCH_CLI_AUTH_DIR). Perch CLI (npm perchai-cli). Off until the owner has run `perch login` (Google or GitHub, in a browser). Written from its help text on 2026-11-07 and not yet proven with a signed-in account: ping it with `dispatch.mjs ping perch`, then raise maxSessions."
     }
   ]
 }

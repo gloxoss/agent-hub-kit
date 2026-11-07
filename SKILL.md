@@ -192,3 +192,7 @@ When one login of an agent runs out of quota, the call should move to another lo
 - **Memory.** The dispatcher refuses launches below the free-memory floor (`resources.buildMinFreeMB` and `resources.reviewMinFreeMB`, default 2048 MB). If the keeper shows `none startable` with ready candidates, check free RAM first and close finished windows.
 - **Never let the lanes run dry.** On every lane-watch line (FINISHED, REVIEW, LOW LANES) do the next step in the same turn: review or accept the finished task, close the window, and start new work. If no task is ready, write the next tasks yourself from the findings of the last reviews and the project plan, then tell the owner what you added. Do not wait to be asked "what next".
 - **Ending a session's watch.** The Monitor stops after 30 minutes; re-arm it at once.
+
+### Perch CLI and free models
+- `npm install -g perchai-cli` gives the `perch` command. Executors `perch` and `perch-rot` are in `executors.json` with `maxSessions: 0`. Sign in once (`perch login`, browser), check with `perch status`, then `node <hub>/dispatch.mjs ping perch` and raise `maxSessions`. For several logins use `agent-accounts add perch <name>` and the `perch-rot` executor.
+- When every paid subscription of one vendor is out (the OpenCode Go plan ran out for a whole month on 2026-11-07, which also took down its DeepSeek and GLM models), keep one free executor healthy: `opencode-free`. Use it for docs and checks first.
