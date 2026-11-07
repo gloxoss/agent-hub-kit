@@ -717,7 +717,16 @@
       ],
       "watch": "perch (interactive chat) or perch run --thread {sid}",
       "restore": "Not signed in or out of credits: run perch status, then perch login.",
-      "note": "Perch CLI (npm perchai-cli). Off until the owner has run `perch login` (Google or GitHub, in a browser). Written from its help text on 2026-11-07 and not yet proven with a signed-in account: ping it with `dispatch.mjs ping perch`, then raise maxSessions. Headless runs need --permission auto_review (or take_the_wheel): without it the run stops with status approval_required and exit 2 at the first file change (found 2026-11-07, 9 failed runs)."
+      "note": "Perch CLI (npm perchai-cli). Off until the owner has run `perch login` (Google or GitHub, in a browser). Written from its help text on 2026-11-07 and not yet proven with a signed-in account: ping it with `dispatch.mjs ping perch`, then raise maxSessions. Headless runs need --permission auto_review (or take_the_wheel): without it the run stops with status approval_required and exit 2 at the first file change (found 2026-11-07, 9 failed runs).",
+      "interactiveArgs": [
+        "--permission",
+        "auto_review",
+        "--mode",
+        "agents",
+        "--cwd",
+        "."
+      ],
+      "typeFirstMessage": true
     },
     {
       "name": "perch-rot",
@@ -740,7 +749,20 @@
       ],
       "watch": "agent-accounts resume perch {sid}",
       "restore": "All Perch accounts are out: agent-accounts status. Add one: agent-accounts add perch <name>.",
-      "note": "Rotates between saved Perch logins with agent-accounts (provider perch, folder per account through PERCH_CLI_AUTH_DIR). Perch CLI (npm perchai-cli). Off until the owner has run `perch login` (Google or GitHub, in a browser). Written from its help text on 2026-11-07 and not yet proven with a signed-in account: ping it with `dispatch.mjs ping perch`, then raise maxSessions. Headless runs need --permission auto_review (or take_the_wheel): without it the run stops with status approval_required and exit 2 at the first file change (found 2026-11-07, 9 failed runs)."
+      "note": "Rotates between saved Perch logins with agent-accounts (provider perch, folder per account through PERCH_CLI_AUTH_DIR). Perch CLI (npm perchai-cli). Off until the owner has run `perch login` (Google or GitHub, in a browser). Written from its help text on 2026-11-07 and not yet proven with a signed-in account: ping it with `dispatch.mjs ping perch`, then raise maxSessions. Headless runs need --permission auto_review (or take_the_wheel): without it the run stops with status approval_required and exit 2 at the first file change (found 2026-11-07, 9 failed runs).",
+      "interactiveArgs": [
+        "run",
+        "perch",
+        "--interactive",
+        "--",
+        "--permission",
+        "auto_review",
+        "--mode",
+        "agents",
+        "--cwd",
+        "."
+      ],
+      "typeFirstMessage": true
     }
   ]
 }

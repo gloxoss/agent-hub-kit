@@ -159,6 +159,7 @@ const DEFAULT_INTERACTIVE_ARGS = {
   agy: ['--dangerously-skip-permissions', '-i', '{msg}'],
   opencode: ['-m', '{model}', '--prompt', '{msg}'],
   'opencode-ds': ['-m', '{model}', '--prompt', '{msg}'],
+  'opencode-free': ['-m', '{model}', '--prompt', '{msg}'],
   codex: ['--sandbox', 'workspace-write', '{msg}'],
   'claude-ag2-sonnet': ['--strict-mcp-config', '--session-id', '{sid}', '--dangerously-skip-permissions', '{msg}'],
   'claude-ag2-gemini': ['--strict-mcp-config', '--tools', 'Bash,Read,Edit,Write,Glob,Grep', '--session-id', '{sid}', '--dangerously-skip-permissions', '{msg}'],
@@ -189,6 +190,8 @@ function makeExecutor(def) {
     },
     // Interactive arguments (a normal TUI session with the task as first message), only for executors that define them.
     interactive: (def.interactiveArgs ?? DEFAULT_INTERACTIVE_ARGS[def.name]) ? (msg, job, sid, opts = {}) => [def.buildCmd, fillArgs(def.interactiveArgs ?? DEFAULT_INTERACTIVE_ARGS[def.name], varsFor(msg, job, sid, opts))] : null,
+    // true: the agent has no way to take a first message on its command line (Perch), so the bridge types it into the window after start-up.
+    typeFirst: def.typeFirstMessage === true,
     restore: def.restore ?? '',
   };
 }
@@ -465,7 +468,7 @@ function launchInteractive(executor, ex, message, base, opts) {
     const builder = (name.match(/^(builder-\d+)-/) || [])[1] || '';
     const task = name.replace(/^(builder-\d+-|review-)/, '');
     const specFile = `${abs}.spec.json`;
-    fs.writeFileSync(specFile, JSON.stringify({ cmd, args, cwd: opts.cwd || ROOT, log: `${abs}.log`, builder, task, startedAt: Date.now() }));
+    fs.writeFileSync(specFile, JSON.stringify({ cmd, args, cwd: opts.cwd || ROOT, log: `${abs}.log`, builder, task, startedAt: Date.now(), ...(ex.typeFirst ? { typeFirst: message, typeDelayMs: 9000 } : {}) }));
     fs.appendFileSync(`${abs}.log`, `[interactive] queued ${new Date().toISOString()}
 `);
     const r = spawnSync(process.execPath, [bridge, 'run', '--spec', specFile, '--log', `${abs}.log`, '--label', `${task} [${executor}]`], { cwd: ROOT, timeout: 30000, stdio: 'ignore', windowsHide: true });

@@ -259,6 +259,15 @@ function runInteractive() {
   const specAbs = path.isAbsolute(spec) ? spec : path.resolve(ROOT, spec);
   const p = place(state, id, label);
   runInPane(p.pane_id, node('interactive-run.mjs', fwd(specAbs)));
+  try {
+    const specJson = JSON.parse(fs.readFileSync(specAbs, 'utf8'));
+    if (specJson.typeFirst) {
+      // The agent has no first-message argument: a detached helper types the task into the window once the chat is up.
+      const textFile = `${specAbs}.first.txt`;
+      fs.writeFileSync(textFile, String(specJson.typeFirst));
+      spawn(process.execPath, [fileURLToPath(import.meta.url), 'type', '--pane', p.pane_id, '--delay', String(specJson.typeDelayMs ?? 9000), '--text-file', textFile], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+    }
+  } catch {}
   track(state, key, p, { label, interactive: true });
   writeState(state);
   return 0;
@@ -566,6 +575,8 @@ async function closeWindows() {
       if (rec && !rec.sessionId) { const sid = hist.discover(rec); if (sid) hist.record({ id: jobId, sessionId: sid }); }
       hist.record({ id: jobId, closedReason: 'owner', closedAt: new Date().toISOString() });
     }
+    // A window closed before its agent finished must not stay RUNNING in the job list: that would hold its lane and executor session.
+    if (!done) { try { fs.appendFileSync(key, '\n[owner] window closed by the owner\n[dispatch] exit 143\n'); } catch {} }
     try { herdr(['pane', 'close', t.pane_id]); } catch {}
     delete state.tabs[key];
     closed++;
@@ -600,6 +611,22 @@ async function reopen() {
 
 // Sends a follow-up message into the EXACT agent session that did the work (it keeps all its context), so nothing
 // is re-run and no context is injected again. If the window was closed it is reopened first from the history library.
+// Types the first message into a freshly started agent window (used by agents without a first-message argument).
+async function typeFirst() {
+  const pane = arg('pane');
+  const delay = Number(arg('delay', 9000));
+  const file = arg('text-file');
+  if (!pane || !file) return 2;
+  const text = fs.readFileSync(file, 'utf8').replace(/\s*\n\s*/g, ' ').trim();
+  await new Promise((r) => setTimeout(r, delay));
+  try {
+    herdr(['pane', 'send-text', pane, text]);
+    await new Promise((r) => setTimeout(r, 800));
+    herdr(['pane', 'send-keys', pane, 'Enter']);
+  } catch { return 1; }
+  return 0;
+}
+
 async function tell() {
   const words = rest.filter((a) => !a.startsWith('--'));
   const wanted = words[0];
@@ -632,7 +659,8 @@ async function tell() {
 
 let code = 0;
 try {
-  if (cmd === 'tell') code = await tell();
+  if (cmd === 'type') code = await typeFirst();
+  else if (cmd === 'tell') code = await tell();
   else if (cmd === 'reap') code = await reap();
   else if (cmd === 'close') code = await withLock(closeWindows);
   else if (cmd === 'reopen') code = await withLock(reopen);
