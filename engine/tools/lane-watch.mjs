@@ -45,7 +45,11 @@ function snapshot() {
       const t = fs.readFileSync(p, 'utf8');
       if (/^\[dispatch\] exit/m.test(t)) continue;
       const age = (Date.now() - fs.statSync(p).mtimeMs) / 60000;
-      if (age > STUCK_MIN && age < 180) out.push([`stuck:${f}`, `STUCK? ${f.replace(/\.log$/, '')} no log change for ${Math.round(age)} min`]);
+      if (!(age > STUCK_MIN && age < 180)) continue;
+      // an old run of a task that is already accepted or cancelled is not stuck, only left over
+      const task = f.replace(/^builder-d+-/, "").replace(/-mw[0-9a-z]+.log$/, "");
+      if (/"status": "(ACCEPTED|CANCELLED)"/.test(run("hub.mjs", ["show", task]))) continue;
+      out.push([`stuck:${f}`, `STUCK? ${f.replace(/\.log$/, '')} no log change for ${Math.round(age)} min`]);
     }
   } catch {}
 
