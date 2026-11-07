@@ -2,6 +2,7 @@
 
 ## 2.3.0 (2026-11-07)
 - **Default way of working: Herdr.** The hub shows its agents in Herdr (terminal workspace manager). One workspace per project, a `board` tab (live hub status) and one tab per agent job. New engine tools: `herdr-bridge.mjs` (ensure, watch, run, prune, status), `interactive-run.mjs`, `job-view.mjs`, `hub-board.mjs`.
+- **One grid, not many tabs.** Agent jobs are placed as panes in an `agents` tab (4 per tab, then `agents 2`); `herdr-bridge.mjs gather` merges older per-job tabs. Config: `herdr.panesPerTab`, `herdr.layout`.
 - **Interactive agent windows.** With `config.herdr.interactive: true`, builders of executors that define `interactiveArgs` (agy, opencode, opencode-ds, codex) start as a normal session in their own tab with the task as first message: the owner reads the agent and talks to it. The hub counts the job finished on the builder's `leave`; the window stays open. Reviews stay headless.
 - `init.mjs` writes a Claude Code SessionStart hook in `.claude/settings.json` that runs `herdr-bridge.mjs ensure --open --soft`, so Herdr opens when a session starts. `--soft` never reports a failure.
 - **Fix:** the autoloop no longer relaunches a build on the executor that just ran out of quota when no other builder is up (message `HOLD`). With a cursor-only build order this loop relaunched about 35 times and drained a paid plan.
