@@ -265,3 +265,7 @@ Format: symptom, cause, fix. Entries are grouped by the part of the loop they co
 
 ## Config files rewritten behind your back (2026-11-07)
 - config.json and executors.json were rewritten by something outside the hub (another editor or session) a few minutes after a commit and lost the new interactive settings. The first Codex job then fell back to hidden mode. Rule: put new behaviour that must survive in code defaults (here DEFAULT_INTERACTIVE_ARGS, and only an explicit false turns Herdr or interactive mode off), not only in the JSON config. After any config change, verify with git diff and with one real job.
+
+## Herdr focus changes interrupt Codex (2026-11-07)
+- Herdr sends a focus signal (ESC [ I and ESC [ O, proven with a byte-level test) to a program that asks for focus events. Codex asks for them, and on Windows it read the signal as the Escape key: "Conversation interrupted" appeared in both Codex windows after the hub moved, closed and focused panes. opencode, agy and the Claude family were not affected. Pane moves and renames alone send nothing.
+- Rule: keep focus churn low (no tab focus calls, `--no-focus` on moves, batch pane closes), and if a Codex window shows "Conversation interrupted", type "continue". The conversation is intact.
