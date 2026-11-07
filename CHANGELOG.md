@@ -1,6 +1,7 @@
 # Changelog
 
 ## 2.4.0 (2026-11-07)
+- **The 30-second watch also finds tasks with no agent.** `lane-watch.mjs` prints `NO AGENT on <task> (STATUS): restart it | last run <executor> stopped by QUOTA: ...` for every unfinished task that has no open window (a quota or login stop is the usual cause), every 30 s until it is restarted. Orchestrator rule: on that line, put the task on a healthy executor in the same turn.
 - **Agents without a first-message argument (Perch) run interactively too.** Executor field `typeFirstMessage: true`: the window opens the real chat (`interactiveArgs`), and a detached helper (`herdr-bridge.mjs type --pane P --delay ms --text-file F`) types the task into it after start-up, the same way `tell` does. Before, Perch only had a log view (`job-view.mjs`), not a live window.
 - **Perch CLI executors.** `perch` and `perch-rot` (off, `maxSessions: 0`) run `perch run "{msg}" --mode agents --json` (npm `perchai-cli`). The login is Google or GitHub in a browser, so the owner runs `perch login` once; then `dispatch.mjs ping perch` and raise `maxSessions`. `perch-rot` rotates saved logins through agent-accounts (provider `perch`, one folder per account through `PERCH_CLI_AUTH_DIR`). Written from the CLI help and code, not yet proven with a signed-in account.
 - **Free OpenCode executor.** `opencode-free` (model `opencode-go/beam-free`). Tested 2026-11-07: `crouton-alpha-free` unavailable, `iceman-contributor-free` asks to allow training on your data (left off), the `opencode/*-free` models need a valid OpenCode Zen key.

@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { fold } from '../fold.mjs';
 
 if (process.argv.includes('--help') || process.argv.includes('-h')) {
   console.log('usage: lane-watch.mjs [--every 30] [--min 6]   prints a line when a window finished, an agent is stuck, a task needs review, or fewer than --min agents run');
@@ -27,6 +28,21 @@ const run = (file, args) => {
 };
 
 const seen = new Map(); // key -> last signature printed
+
+// Names the executor whose latest run of this task ended on a quota or login error, from the run logs of the last 20 minutes.
+function lastQuota(task) {
+  try {
+    const runs = path.join(HUB, 'runs');
+    const files = fs.readdirSync(runs).filter((n) => n.endsWith('.log') && n.includes(`-${task}-mw`)).map((n) => ({ n, m: fs.statSync(path.join(runs, n)).mtimeMs })).sort((a, b) => b.m - a.m);
+    const f = files[0];
+    if (!f || Date.now() - f.m > 20 * 60000) return '';
+    const text = fs.readFileSync(path.join(runs, f.n), 'utf8');
+    const m = text.match(/^ERROR (QUOTA|AUTH): (.*)$/m);
+    if (!m) return '';
+    const ex = (text.match(/started: (\S+)/) || [])[1] ?? '';
+    return ` | last run ${ex} stopped by ${m[1]}: ${m[2].slice(0, 60)}`;
+  } catch { return ''; }
+}
 
 function snapshot() {
   const out = [];
@@ -54,6 +70,21 @@ function snapshot() {
       // only a window that is still open can be stuck: a log whose window was closed is a leftover, not a problem
       if (!live.some((m) => m[2].startsWith(`${task} `))) continue;
       out.push([`stuck:${f}`, `STUCK? ${f.replace(/\.log$/, '')} no log change for ${Math.round(age)} min`]);
+    }
+  } catch {}
+
+  // An unfinished task with no open window has no agent working on it: the usual cause is a quota or login stop.
+  // Say so every 30 s until someone restarts it, and name the executor that just failed.
+  try {
+    const ev = fs.readFileSync(path.join(HUB, 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+    const state = fold(ev);
+    const T = state.tasks ?? state;
+    let excluded = [];
+    try { excluded = JSON.parse(fs.readFileSync(path.join(HUB, 'config.json'), 'utf8')).keeper?.exclude ?? []; } catch {}
+    const liveTasks = new Set(live.map((m) => m[2].replace(/\s*\[.*$/, '')));
+    for (const [id, task] of Object.entries(T)) {
+      if (!['ASSIGNED', 'CLAIMED', 'REWORK'].includes(task.status) || liveTasks.has(id) || excluded.includes(id)) continue;
+      out.push([`noagent:${id}`, `NO AGENT on ${id} (${task.status}): restart it${lastQuota(id)}`]);
     }
   } catch {}
 
