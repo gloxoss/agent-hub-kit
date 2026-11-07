@@ -288,3 +288,8 @@ Format: symptom, cause, fix. Entries are grouped by the part of the loop they co
 - **A screen-hash idle check must ignore digits and spinners**, or a clock in the window makes it look busy forever and "finished and untouched" is never true.
 - **Low free memory looks like a mass launch failure.** The dispatcher answers "not dispatched: low memory" and the keeper logs `KEEPER-FAIL` for every ready task in the same second. Check RAM and close old windows before looking for anything else.
 - **When the brief scope and the hub scope differ, builders stop** ("scope conflict, I stop before the claim"). Edit both.
+- **A brief's `## Skills` lines must be "- `name`: reason".** A line with only the name, or the name with a note in parentheses, makes the dispatcher refuse the task ("skill X has no reason") and the keeper logs `KEEPER-FAIL ... SKILLS`. Briefs written by audit agents often miss this; normalise them before registering tasks.
+- **Closing a window does not release its claim.** The hub treats a worker as active until its heartbeat is stale. When a task moves to a new builder, `hub kick <old builder>` first (it also releases the old builder's other claims), or the new builder is refused with "held by".
+- **A BLOCKED task has no orchestrator unblock command.** `release` needs a claim you do not hold. Approve the scope with `hub edit --scope` (and the brief text), `kick` the blocker, and let a fresh builder claim it.
+- **When an agent says "scope approval needed", the answer is in two places:** `hub edit --scope` and the brief's "Allowed scope" line. Do both.
+- **Briefs written by an audit can create dependency loops** (A needs B, B needs A). Check `Depends on:` lines before registering; register in passes until no "unknown dep" error remains.
