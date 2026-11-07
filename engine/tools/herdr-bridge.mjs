@@ -61,7 +61,7 @@ function serverRunning() {
   } catch { return false; }
 }
 
-function readState() {
+function readStateRaw() {
   try {
     const s = JSON.parse(fs.readFileSync(STATE, 'utf8'));
     s.tabs ??= {};
@@ -69,8 +69,41 @@ function readState() {
     return s;
   } catch { return { workspace_id: null, tabs: {}, groups: [] }; }
 }
+// Remembers which jobs this process knew about when it read the file.
+function readState() {
+  const s = readStateRaw();
+  Object.defineProperty(s, '_known', { value: new Set(Object.keys(s.tabs)), enumerable: false });
+  return s;
+}
+// Several processes use this file at once (the hub starting jobs, the watcher, the owner). Before writing, keep
+// every entry another process added since this one read the file, so a slow process never erases a new window.
 function writeState(s) {
-  try { fs.mkdirSync(path.dirname(STATE), { recursive: true }); fs.writeFileSync(STATE, JSON.stringify(s, null, 1)); } catch {}
+  try {
+    const disk = readStateRaw();
+    for (const [k, v] of Object.entries(disk.tabs)) if (!(k in s.tabs) && !s._known?.has(k)) s.tabs[k] = v;
+    for (const g of disk.groups) {
+      const mine = s.groups.find((x) => x.tab_id === g.tab_id);
+      if (!mine) s.groups.push(g);
+      else for (const p of g.panes) if (!mine.panes.includes(p)) mine.panes.push(p);
+    }
+    fs.mkdirSync(path.dirname(STATE), { recursive: true });
+    fs.writeFileSync(STATE, JSON.stringify(s, null, 1));
+  } catch {}
+}
+
+// A short exclusive lock for the commands that place windows, so two jobs starting together do not split the same pane.
+async function withLock(fn) {
+  const lock = `${STATE}.lock`;
+  const start = Date.now();
+  let fd = null;
+  for (;;) {
+    try { fd = fs.openSync(lock, 'wx'); break; } catch {
+      try { if (Date.now() - fs.statSync(lock).mtimeMs > 60000) fs.unlinkSync(lock); } catch {}
+      if (Date.now() - start > 30000) break;
+      await new Promise((r) => setTimeout(r, 150));
+    }
+  }
+  try { return await fn(); } finally { if (fd !== null) { try { fs.closeSync(fd); fs.unlinkSync(lock); } catch {} } }
 }
 
 async function openWindow() {
@@ -307,11 +340,13 @@ function gather() {
 }
 
 // ------------------------------------------------------------------------------------------------------------
-// Watching the agent windows. The bridge NEVER closes a window on its own: the owner reads the output first.
-//  - A window that hit a quota or login error is retired in the HUB (the log gets the error and the exit marker,
-//    so the hub moves the task to another agent) but the window stays open to read.
-//  - A finished window that stays open too long, or an agent idle for a long time, produces a notification.
-//  - Windows are closed only by `close`, which the owner asks for.
+// Watching the agent windows.
+//  - A window whose agent FAILED (quota or login error on screen, or the agent process ended with an error) is
+//    closed by the watcher, its session is saved in the history library, and the task is restarted on the next
+//    healthy agent, with a note to continue from the files already changed.
+//  - A window whose agent FINISHED WELL is never closed by the watcher: the owner reads the output first. If it stays
+//    open too long, or an agent is idle for a long time, the owner gets a notification.
+//  - Finished windows are closed only by \`close\`, which the owner asks for.
 // ------------------------------------------------------------------------------------------------------------
 const NOTES = path.join(HUB, 'runs', 'notifications.log');
 const REAP = CFG.reap ?? {};
@@ -351,6 +386,74 @@ function markExecutorDown(label, kind, line) {
 
 const sha = (s) => { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return String(h); };
 
+const hubCmd = (a) => { try { execFileSync(process.execPath, [path.join(HUB, 'hub.mjs'), ...a], { cwd: ROOT, stdio: 'ignore', timeout: 30000 }); } catch {} };
+
+// True when another agent already works on this task (its log has no exit marker and is still being written).
+function taskHasLiveJob(task, exceptJob) {
+  try {
+    const jobs = new Map();
+    for (const l of fs.readFileSync(path.join(HUB, 'runs', 'jobs.jsonl'), 'utf8').split('\n').filter(Boolean)) {
+      try { const j = JSON.parse(l); jobs.set(j.id, { ...(jobs.get(j.id) ?? {}), ...j }); } catch {}
+    }
+    for (const j of jobs.values()) {
+      if ((j.taskId ?? j.task) !== task || j.id === exceptJob || j.review || j.mode === 'review' || !j.log) continue;
+      const file = path.resolve(ROOT, j.log);
+      try {
+        const text = fs.readFileSync(file, 'utf8');
+        if (/^\[dispatch\] exit/m.test(text)) continue;
+        if (Date.now() - fs.statSync(file).mtimeMs < (text.includes('[interactive]') ? 100000 : 15 * 60000)) return true;
+      } catch {}
+    }
+  } catch {}
+  return false;
+}
+
+// First agent of the build order that is not the failed one, is not marked down, and may run sessions.
+function nextExecutor(failed) {
+  try {
+    const e = JSON.parse(fs.readFileSync(path.join(HUB, 'executors.json'), 'utf8'));
+    const defs = Array.isArray(e.executors) ? e.executors : Object.values(e.executors);
+    let health = {};
+    try { health = JSON.parse(fs.readFileSync(path.join(HUB, 'runs', 'health.json'), 'utf8')); } catch {}
+    for (const name of e.buildOrder ?? []) {
+      if (name === failed || health[name]?.ok === false) continue;
+      const def = defs.find((d) => d.name === name);
+      if (def && (def.maxSessions ?? 1) > 0) return name;
+    }
+  } catch {}
+  return null;
+}
+
+// A failed agent: save the way back, close its window, restart the task on the next healthy agent.
+async function retire(state, key, t, hist, kind) {
+  const jobId = path.basename(key, '.log');
+  const task = String(t.label).replace(/\s*\[.*$/, '');
+  const failedExec = String(t.label).match(/\[([^\]]+)\]\s*$/)?.[1];
+  const builder = (jobId.match(/^(builder-\d+)-/) || [])[1];
+  if (hist) {
+    const rec = hist.readAll().find((r) => r.id === jobId);
+    if (rec && !rec.sessionId) { const sid = hist.discover(rec); if (sid) hist.record({ id: jobId, sessionId: sid }); }
+    hist.record({ id: jobId, closedReason: `auto:${kind}`, closedAt: new Date().toISOString() });
+  }
+  try { herdr(['pane', 'close', t.pane_id]); } catch {}
+  delete state.tabs[key];
+  let outcome;
+  if (taskHasLiveJob(task, jobId)) outcome = 'the task already runs on another agent';
+  else {
+    const next = nextExecutor(failedExec);
+    if (!next) outcome = 'no healthy agent is available, the keeper retries later';
+    else {
+      hubCmd(['progress', task, '--agent', 'orchestrator', '--note', `Previous agent (${failedExec}) stopped: ${kind}. Continue from the files already changed: run git status and git diff on your scope before writing anything.`]);
+      if (builder) hubCmd(['kick', builder, '--agent', 'orchestrator', '--note', `window closed by the watcher (${kind})`]);
+      try {
+        execFileSync(process.execPath, [path.join(HUB, 'dispatch.mjs'), 'run', next, 'auto', task], { cwd: ROOT, stdio: 'ignore', timeout: 120000 });
+        outcome = `restarted on ${next}`;
+      } catch { outcome = 'restart failed, the keeper retries'; }
+    }
+  }
+  notify(`${t.label}: ${kind}`, `Window closed by the watcher; ${outcome}. The session is saved (reopen ${jobId}).`, `${jobId}:retired`);
+}
+
 async function reap() {
   if (!serverRunning()) return 0;
   const state = readState();
@@ -376,10 +479,9 @@ async function reap() {
       if (hit && idleMin >= MIN.errorIdle && !w.errorHandled) {
         const [kind, line] = hit;
         w.errorHandled = true;
-        try { fs.appendFileSync(key, `\nERROR ${kind}: ${line.trim()}\n[reaper] ${t.label} stopped by ${kind}; the window stays open\n[dispatch] exit 1\n`); } catch {}
+        try { fs.appendFileSync(key, `\nERROR ${kind}: ${line.trim()}\n[reaper] ${t.label} stopped by ${kind}\n[dispatch] exit 1\n`); } catch {}
         markExecutorDown(t.label, kind, line);
-        hist?.record({ id: jobId, endedReason: `error:${kind}`, endedAt: new Date().toISOString() });
-        notify(`${t.label}: ${kind}`, `Blocked (${kind}). The hub moves the task to another agent. This window stays open for you to read.`, `${jobId}:error`);
+        await retire(state, key, t, hist, kind);
         continue;
       }
       // 2. idle for a long time without finishing: it may be waiting for an answer
@@ -391,7 +493,14 @@ async function reap() {
       continue;
     }
 
-    // 3. finished and still open: remind the owner, never close it
+    // 3a. the agent ended with an error (non-zero exit, or marked blocked earlier): close the window and restart the task
+    const logText = (() => { try { return fs.readFileSync(key, 'utf8'); } catch { return ''; } })();
+    const exitN = Number((logText.match(/^\[dispatch\] exit (-?\d+)/m) || [])[1] ?? 0);
+    if (exitN !== 0 || /^\[reaper\]/m.test(logText)) {
+      await retire(state, key, t, hist, (/^\[reaper\] .*stopped by (\w+)/m.exec(logText) || [])[1] ?? 'FAILED');
+      continue;
+    }
+    // 3. finished well and still open: remind the owner, never close it
     if (!w.finishedAt) { try { w.finishedAt = fs.statSync(key).mtimeMs; } catch { w.finishedAt = now; } }
     const since = (now - w.finishedAt) / 60000;
     if (since >= MIN.finishedNotify && idleMin >= 1 && (!w.lastNotified || (now - w.lastNotified) / 60000 >= MIN.renotify)) {
@@ -492,12 +601,12 @@ let code = 0;
 try {
   if (cmd === 'tell') code = await tell();
   else if (cmd === 'reap') code = await reap();
-  else if (cmd === 'close') code = await closeWindows();
-  else if (cmd === 'reopen') code = await reopen();
-  else if (cmd === 'gather') code = gather();
+  else if (cmd === 'close') code = await withLock(closeWindows);
+  else if (cmd === 'reopen') code = await withLock(reopen);
+  else if (cmd === 'gather') code = await withLock(async () => gather());
   else if (cmd === 'ensure') code = await ensure();
-  else if (cmd === 'watch') code = watch();
-  else if (cmd === 'run') code = runInteractive();
+  else if (cmd === 'watch') code = await withLock(async () => watch());
+  else if (cmd === 'run') code = await withLock(async () => runInteractive());
   else if (cmd === 'prune') code = prune();
   else if (cmd === 'status') code = status();
   else { console.error(`unknown command "${cmd}"`); code = 2; }

@@ -68,7 +68,8 @@ function frame() {
       if (!t.interactive || t.reopened) continue;
       let text = '';
       try { text = fs.readFileSync(logFile, 'utf8'); } catch { continue; }
-      if (/^\[dispatch\] exit/m.test(text)) waiting.push(t.label + '  finished ' + Math.round((Date.now() - fs.statSync(logFile).mtimeMs) / 60000) + ' min ago' + (/^\[reaper\]/m.test(text) ? '  (blocked)' : ''));
+      // Only windows that finished well wait for the owner. Failed ones are closed and restarted by the watcher.
+      if (/^\[dispatch\] exit 0/m.test(text) && !/^\[reaper\]/m.test(text)) waiting.push(t.label + '  finished ' + Math.round((Date.now() - fs.statSync(logFile).mtimeMs) / 60000) + ' min ago');
     }
   } catch {}
   if (waiting.length) {
