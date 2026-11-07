@@ -504,7 +504,8 @@ async function reap() {
     const since = (now - w.finishedAt) / 60000;
     // 3b. the owner did nothing for autoActionMinutes (screen unchanged): the work is finished in the hub -> close the
     // window (session kept in the history library); the work is not finished -> continue it in the same session.
-    if (MIN.autoAction > 0 && since >= MIN.autoAction && idleMin >= MIN.autoAction) {
+    // A moving screen (spinner, clock) must not keep a finished window open for ever: after twice the wait it is handled anyway.
+    if (MIN.autoAction > 0 && since >= MIN.autoAction && (idleMin >= MIN.autoAction || since >= MIN.autoAction * 2)) {
       const task = String(t.label).replace(/\s*\[.*$/, '');
       const status = hubTaskStatus(task);
       const workDone = status && !['ASSIGNED', 'REWORK', 'OPEN', 'CLAIMED'].includes(status);

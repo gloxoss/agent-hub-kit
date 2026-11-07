@@ -77,5 +77,16 @@
     "interactive": true,
     "workspaceLabel": "",
     "maxTabs": 14
+  },
+  "keeper": {
+    "startChores": true
+  },
+  "reap": {
+    "errorIdleMinutes": 1,
+    "finishedNotifyMinutes": 10,
+    "renotifyMinutes": 60,
+    "stalledMinutes": 30,
+    "autoActionMinutes": 5,
+    "maxContinues": 2
   }
 }

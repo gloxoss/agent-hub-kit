@@ -124,7 +124,7 @@ function cycle() {
     if (FINAL.has(t.status) || K.exclude.includes(id)) continue;
     if (!['ASSIGNED', 'REWORK', 'OPEN', 'CLAIMED', 'BLOCKED'].includes(t.status)) continue;
     if (runningTasks.has(id)) continue;
-    if (t.phase === 'chore' || /^D-/.test(id)) continue;
+    if ((t.phase === 'chore' || /^D-/.test(id)) && !K.startChores) continue; // config keeper.startChores: true lets the keeper start docs/chore tasks too
     const unmet = (t.deps ?? []).filter((d) => (t.strict ? T[d]?.status !== 'ACCEPTED' : !BUILT.has(T[d]?.status)));
     if (unmet.length) continue;
     // An orchestrator fix (wider scope, new brief) wipes the past: runs/keeper-reset.json = { "TASK-ID": epoch_ms }.
@@ -143,7 +143,7 @@ function cycle() {
   for (const c of cand) {
     if (free <= 0) break;
     const scope = c.t.scope ?? [];
-    if (scope.length && runScopes.some((s) => overlaps(scope, s))) continue;
+    if (scope.length && runScopes.some((s) => overlaps(scope, s))) { say(`KEEPER-SKIP ${c.id}: its files overlap a running task`); continue; }
     // Executor-level trouble only: a task that fails, or a job the orchestrator killed (DOWN), says nothing about the executor.
     // QUOTA or AUTH means the account is out; four plain failures in 30 minutes is a sign too.
     const bad = (ex) => {

@@ -7,6 +7,10 @@
 - **Reaper patterns:** credit-balance-too-low and sign-in messages (`please sign in`, `not signed in`) count as quota/login failures; failed windows are retired after 1 quiet minute (was 2).
 - **`tools/lane-watch.mjs`:** every 30 seconds prints one line only when a window finished, an agent looks stuck (log unchanged 10 min), a task reached REVIEW, or fewer than `--min` (default 6) agents run. Run it with the Monitor tool; each line is an event for the orchestrator.
 - **`tools/container-check.mjs`:** `tsc` or `jest <pattern>` inside the backend container, so a brief can name a proof the accept gate can run (the gate only runs lines that start with node, npm, npx, pnpm, git diff or bash). Exit 2 means the container is not running and the proof was NOT run.
+- **A moving screen cannot keep a finished window open.** After twice `autoActionMinutes` (10 min) a finished window is closed or asked to continue even if its screen still changes.
+- **Keeper:** `keeper.startChores` (default true in the kit config) lets it start `chore` / `D-` tasks too; before, they never started on their own. It now prints `KEEPER-SKIP <task>: its files overlap a running task` instead of skipping silently.
+- **Orchestrator duty (SKILL.md):** on every lane-watch line, close or hand out the next task in the same turn; never wait for the owner to ask for the next plan. When no task is ready, write the next tasks from the last reviews' findings.
+- **Existing workspaces:** `kit-sync pull` keeps a `config.json` you edited, so copy `reap` and `keeper.startChores` from the kit `engine/config.json` by hand.
 - Source: MoreneParfums hub, 2026-11-07.
 
 ## 2.3.0 (2026-11-07)
