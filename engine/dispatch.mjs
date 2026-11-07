@@ -160,6 +160,14 @@ const DEFAULT_INTERACTIVE_ARGS = {
   opencode: ['-m', '{model}', '--prompt', '{msg}'],
   'opencode-ds': ['-m', '{model}', '--prompt', '{msg}'],
   codex: ['--sandbox', 'workspace-write', '{msg}'],
+  'claude-ag2-sonnet': ['--strict-mcp-config', '--session-id', '{sid}', '--dangerously-skip-permissions', '{msg}'],
+  'claude-ag2-gemini': ['--strict-mcp-config', '--tools', 'Bash,Read,Edit,Write,Glob,Grep', '--session-id', '{sid}', '--dangerously-skip-permissions', '{msg}'],
+  'claude-grok': ['--strict-mcp-config', '--session-id', '{sid}', '--dangerously-skip-permissions', '{msg}'],
+  'claude-ds1': ['--session-id', '{sid}', '--dangerously-skip-permissions', '{msg}'],
+  'claude-ds2': ['--session-id', '{sid}', '--dangerously-skip-permissions', '{msg}'],
+  'claude-ds3': ['--session-id', '{sid}', '--dangerously-skip-permissions', '{msg}'],
+  claude: ['--session-id', '{sid}', '--dangerously-skip-permissions', '{msg}'],
+  cursor: ['--model', 'grok-4.7-medium-fast', '--force', '{msg}'],
 };
 
 function makeExecutor(def) {
