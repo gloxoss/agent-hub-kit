@@ -11,7 +11,7 @@
 //   node .agent-hub/tools/herdr-bridge.mjs run --spec <file> --log <file> --label <text>   place the agent INTERACTIVELY (exit 3 = Herdr unavailable)
 //   node .agent-hub/tools/herdr-bridge.mjs watch --log <file> --label <text>   place a readable log view (never fails the caller)
 //   node .agent-hub/tools/herdr-bridge.mjs prune [--minutes N]   close log-view panes of jobs finished more than N minutes ago (default 30)
-//   node .agent-hub/tools/herdr-bridge.mjs reap       watch the windows: retire blocked ones in the hub, notify about finished or idle ones (never closes)
+//   node .agent-hub/tools/herdr-bridge.mjs reap       watch the windows: retire blocked ones in the hub, notify about idle ones; finished ones are closed after autoActionMinutes (5) if the task is done in the hub, or asked to continue if not
 //   node .agent-hub/tools/herdr-bridge.mjs close --finished | --failed | --task <id> | --pane <id>   close windows, only when the owner asks
 //   node .agent-hub/tools/herdr-bridge.mjs reopen <job id | task id>   bring a closed agent back (its own resume command)
 //   node .agent-hub/tools/herdr-bridge.mjs tell <task id | pane id> <message>   send a follow-up INTO that agent session (reopens it if closed): same context, no new run
@@ -355,6 +355,8 @@ const MIN = {
   finishedNotify: Number(REAP.finishedNotifyMinutes ?? 10),
   renotify: Number(REAP.renotifyMinutes ?? 60),
   stalled: Number(REAP.stalledMinutes ?? 30),
+  autoAction: Number(REAP.autoActionMinutes ?? 5),
+  maxContinues: Number(REAP.maxContinues ?? 2),
 };
 const ERROR_PATTERNS = [
   ['QUOTA', /weekly usage limit reached|usage limit reached|insufficient balance|out of credits|credits? balance (is )?too low|credit balance is too low|rate limit (reached|exceeded)|prepaid_balance_exhausted|exceeded your (current )?quota/i],
@@ -386,6 +388,8 @@ function markExecutorDown(label, kind, line) {
 
 const sha = (s) => { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return String(h); };
 
+// Status of a hub task (ASSIGNED, REVIEW, ACCEPTED...), or null when it cannot be read.
+const hubTaskStatus = (task) => { try { return JSON.parse(execFileSync(process.execPath, [path.join(HUB, "hub.mjs"), "show", task, "--agent", "orchestrator"], { cwd: ROOT, encoding: "utf8", timeout: 30000, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, AGENT_ID: "orchestrator" } })).status ?? null; } catch { return null; } };
 const hubCmd = (a) => { try { execFileSync(process.execPath, [path.join(HUB, 'hub.mjs'), ...a], { cwd: ROOT, stdio: 'ignore', timeout: 30000 }); } catch {} };
 
 // True when another agent already works on this task (its log has no exit marker and is still being written).
@@ -440,16 +444,10 @@ async function retire(state, key, t, hist, kind) {
   let outcome;
   if (taskHasLiveJob(task, jobId)) outcome = 'the task already runs on another agent';
   else {
-    const next = nextExecutor(failedExec);
-    if (!next) outcome = 'no healthy agent is available, the keeper retries later';
-    else {
-      hubCmd(['progress', task, '--agent', 'orchestrator', '--note', `Previous agent (${failedExec}) stopped: ${kind}. Continue from the files already changed: run git status and git diff on your scope before writing anything.`]);
-      if (builder) hubCmd(['kick', builder, '--agent', 'orchestrator', '--note', `window closed by the watcher (${kind})`]);
-      try {
-        execFileSync(process.execPath, [path.join(HUB, 'dispatch.mjs'), 'run', next, 'auto', task], { cwd: ROOT, stdio: 'ignore', timeout: 120000 });
-        outcome = `restarted on ${next}`;
-      } catch { outcome = 'restart failed, the keeper retries'; }
-    }
+    // One launcher only: the keeper starts every build. Starting the task here too made two agents race for the same claim.
+    hubCmd(['progress', task, '--agent', 'orchestrator', '--note', `Previous agent (${failedExec}) stopped: ${kind}. Continue from the files already changed: run git status and git diff on your scope before writing anything.`]);
+    if (builder) hubCmd(['kick', builder, '--agent', 'orchestrator', '--note', `window closed by the watcher (${kind})`]);
+    outcome = nextExecutor(failedExec) ? 'the keeper restarts it on the next healthy agent within a minute' : 'no healthy agent is available, the keeper retries later';
   }
   notify(`${t.label}: ${kind}`, `Window closed by the watcher; ${outcome}. The session is saved (reopen ${jobId}).`, `${jobId}:retired`);
 }
@@ -466,7 +464,8 @@ async function reap() {
     const w = (t.watch ??= {});
     let text = '';
     try { text = String(herdr(['pane', 'read', t.pane_id, '--lines', '60'])?.raw ?? ''); } catch { continue; }
-    const h = sha(text);
+    // Timers, counters and spinners change every second; hash the text without them, so "unchanged" means the owner did nothing.
+    const h = sha(text.replace(/[0-9]+/g, "#").replace(/[⠀-⣿▀-▟■-◿|\/-]/g, ""));
     if (h !== w.hash) { w.hash = h; w.changedAt = now; }
     const idleMin = (now - (w.changedAt ?? now)) / 60000;
     const done = finished(key);
@@ -500,9 +499,40 @@ async function reap() {
       await retire(state, key, t, hist, (/^\[reaper\] .*stopped by (\w+)/m.exec(logText) || [])[1] ?? 'FAILED');
       continue;
     }
-    // 3. finished well and still open: remind the owner, never close it
+    // 3. finished well and still open
     if (!w.finishedAt) { try { w.finishedAt = fs.statSync(key).mtimeMs; } catch { w.finishedAt = now; } }
     const since = (now - w.finishedAt) / 60000;
+    // 3b. the owner did nothing for autoActionMinutes (screen unchanged): the work is finished in the hub -> close the
+    // window (session kept in the history library); the work is not finished -> continue it in the same session.
+    if (MIN.autoAction > 0 && since >= MIN.autoAction && idleMin >= MIN.autoAction) {
+      const task = String(t.label).replace(/\s*\[.*$/, '');
+      const status = hubTaskStatus(task);
+      const workDone = status && !['ASSIGNED', 'REWORK', 'OPEN', 'CLAIMED'].includes(status);
+      if (workDone || (status && (w.continues ?? 0) >= MIN.maxContinues)) {
+        if (hist) {
+          const rec = hist.readAll().find((r) => r.id === jobId);
+          if (rec && !rec.sessionId) { const sid = hist.discover(rec); if (sid) hist.record({ id: jobId, sessionId: sid }); }
+          hist.record({ id: jobId, closedReason: workDone ? 'auto:finished' : 'auto:gave-up', closedAt: new Date().toISOString() });
+        }
+        try { herdr(['pane', 'close', t.pane_id]); } catch {}
+        delete state.tabs[key];
+        notify(`${t.label} closed`, workDone ? `Finished and untouched for ${MIN.autoAction} min; task is ${status}. Session saved (reopen ${jobId}).` : `Task still ${status} after ${w.continues} continue attempts; the keeper takes over. Session saved (reopen ${jobId}).`, `${jobId}:autoclosed`);
+        continue;
+      }
+      if (status) {
+        // not finished in the hub: ask the same agent to continue, in its own session
+        w.continues = (w.continues ?? 0) + 1;
+        w.finishedAt = now;
+        try {
+          herdr(['pane', 'send-text', t.pane_id, `The hub still shows ${task} as ${status}. Continue the work in this session: check what is left against the brief, finish it, run the proof commands, then report hub done and leave.`]);
+          await new Promise((r) => setTimeout(r, 800));
+          herdr(['pane', 'send-keys', t.pane_id, 'Enter']);
+          hubCmd(['progress', task, '--agent', 'orchestrator', '--note', `The agent window sat finished while the task is ${status}; the watcher asked the same session to continue (attempt ${w.continues}).`]);
+          notify(`${t.label} asked to continue`, `Task is still ${status}. Attempt ${w.continues} of ${MIN.maxContinues}.`, `${jobId}:continued`);
+        } catch {}
+        continue;
+      }
+    }
     if (since >= MIN.finishedNotify && idleMin >= 1 && (!w.lastNotified || (now - w.lastNotified) / 60000 >= MIN.renotify)) {
       w.lastNotified = now;
       notify(`${t.label} finished ${Math.round(since)} min ago`, 'Still open for you to read. Close it yourself or ask the orchestrator to close it.', `${jobId}:finished`);

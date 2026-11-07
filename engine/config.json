@@ -6,7 +6,7 @@
   "opencodeModel": "opencode-go/glm-5.3-flash",
   "hubDir": ".agent-hub",
   "kit": {
-    "version": "2.3.0",
+    "version": "2.4.0",
     "source": null
   },
   "skillRoots": [

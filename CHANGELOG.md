@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.4.0 (2026-11-07)
+- **Finished windows are handled after 5 quiet minutes.** `herdr-bridge.mjs reap`: a finished window the owner did not touch for `reap.autoActionMinutes` (default 5, 0 turns it off) is closed when the task is done in the hub (session kept in the history library), or asked to continue in its own session when the task is still ASSIGNED, REWORK, OPEN or CLAIMED. After `reap.maxContinues` (default 2) attempts it closes and the keeper takes over.
+- **"Untouched" ignores timers.** The idle check hashes the window text without digits and spinner characters; a ticking clock no longer makes a finished window look busy.
+- **One launcher only.** When the reaper closes a failed window it records the reason and frees the builder; the keeper alone restarts the task. Two launchers racing for one task made a second agent start, find the claim held, and quit.
+- **Reaper patterns:** credit-balance-too-low and sign-in messages (`please sign in`, `not signed in`) count as quota/login failures; failed windows are retired after 1 quiet minute (was 2).
+- **`tools/lane-watch.mjs`:** every 30 seconds prints one line only when a window finished, an agent looks stuck (log unchanged 10 min), a task reached REVIEW, or fewer than `--min` (default 6) agents run. Run it with the Monitor tool; each line is an event for the orchestrator.
+- **`tools/container-check.mjs`:** `tsc` or `jest <pattern>` inside the backend container, so a brief can name a proof the accept gate can run (the gate only runs lines that start with node, npm, npx, pnpm, git diff or bash). Exit 2 means the container is not running and the proof was NOT run.
+- Source: MoreneParfums hub, 2026-11-07.
+
 ## 2.3.0 (2026-11-07)
 - **Default way of working: Herdr.** The hub shows its agents in Herdr (terminal workspace manager). One workspace per project, a `board` tab (live hub status) and one tab per agent job. New engine tools: `herdr-bridge.mjs` (ensure, watch, run, prune, status), `interactive-run.mjs`, `job-view.mjs`, `hub-board.mjs`.
 - **One grid, not many tabs.** Agent jobs are placed as panes in an `agents` tab (4 per tab, then `agents 2`); `herdr-bridge.mjs gather` merges older per-job tabs. Config: `herdr.panesPerTab`, `herdr.layout`.
