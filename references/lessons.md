@@ -269,3 +269,14 @@ Format: symptom, cause, fix. Entries are grouped by the part of the loop they co
 ## Herdr focus changes interrupt Codex (2026-11-07)
 - Herdr sends a focus signal (ESC [ I and ESC [ O, proven with a byte-level test) to a program that asks for focus events. Codex asks for them, and on Windows it read the signal as the Escape key: "Conversation interrupted" appeared in both Codex windows after the hub moved, closed and focused panes. opencode, agy and the Claude family were not affected. Pane moves and renames alone send nothing.
 - Rule: keep focus churn low (no tab focus calls, `--no-focus` on moves, batch pane closes), and if a Codex window shows "Conversation interrupted", type "continue". The conversation is intact.
+
+## Lessons from DSFAV (2026-11-07)
+- **Backticked prose in Done-when runs as a command.** `accept.mjs` runs every backtick span that starts with node/npm/npx/pnpm/bash. `pnpm contract -> 0 errors` ran verbatim, failed, and rejected a task that had passed review. Keep only the bare command in backticks; the brief template says so now.
+- **`git add` on a git-ignored file fails the whole accept and leaves a half-staged index** that the next task's commit would absorb. `accept.mjs` now drops ignored paths (generated types, reports) before staging.
+- **Reviewers on Windows report "corrupted accents" that are only a console codepage.** The file was valid UTF-8. The review prompt now requires a byte check for U+FFFD before reporting it.
+- **Hub task ids must match `/^[A-Z]-[a-z0-9][a-z0-9-]*$/`.** `T-S01` is rejected; use `T-s01`.
+- **Build tasks wait for a verifier by default** ("T-x is REVIEW; build tasks need VERIFIED first") even when the autoloop's review passed. If the project reviews with the autoloop only, run `hub edit <task> --verify off` for each task.
+- **A shared executor quota drains two projects at once.** agy backed two hubs; both stalled when it emptied. Check which other hubs share an account before planning parallel lanes.
+- **An agy run can end `status: ERROR` ("Malformed function call") with exit 0.** The loop sees a finished job without `done` and moves the task to the next executor. Watch for the move onto a weaker model and re-route red-risk tasks by hand.
+- **`kit-sync pull` is mtime based.** Files edited in the instance are kept (CHANGED); the rest are overwritten with a backup, including `executors.json`, so disabled executors and build/review orders come back as shipped. Re-apply them after a pull.
+- **A pulled config without a `herdr` key counts as enabled and interactive** (`herdr?.enabled === false` is the only off switch). In an unattended project set `herdr` explicitly right after the pull.

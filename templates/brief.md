@@ -23,6 +23,7 @@ Numbered, specific to this task.
 
 ## Done when
 Exact checks, each with the command to run. `done --verify` must quote the real output.
+Put ONLY the bare command in backticks (for example `pnpm test`), and write what it should print after it, outside the backticks. The acceptance gate runs every backticked span that starts with node, npm, npx, pnpm or bash, so a span like `pnpm contract -> 0 errors` runs verbatim, fails, and bounces the task.
 
 ## Report back
 What to put in `done --summary`, and any file the orchestrator needs.

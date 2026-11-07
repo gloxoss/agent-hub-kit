@@ -1,4 +1,4 @@
-import { execFileSync, execSync } from 'node:child_process';
+import { execFileSync, execSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -281,7 +281,11 @@ if (!autoCommit) {
   console.log(`${id}: accepted, not committed (autoCommit off). Files: ${files.join(', ') || 'none'}`);
   process.exit(0);
 }
-if (files.length) execFileSync('git', ['add', '--', ...files], { cwd: ROOT });
+// git add fails on any explicitly named ignored path (generated types, reports) and leaves a half-staged index,
+// so drop ignored files first; they are rebuilt from source and are never committed.
+const ignored = new Set(spawnSync('git', ['check-ignore', '--', ...files], { cwd: ROOT, encoding: 'utf8' }).stdout.split('\n').map((s) => s.trim()).filter(Boolean));
+const addable = files.filter((f) => !ignored.has(f));
+if (addable.length) execFileSync('git', ['add', '--', ...addable], { cwd: ROOT });
 const staged = execFileSync('git', ['diff', '--cached', '--name-only'], { cwd: ROOT, encoding: 'utf8' }).trim();
 
 // Read commit trailer from config.json; fall back to the caller-supplied msg.
