@@ -189,7 +189,7 @@ function makeExecutor(def) {
       return def.watch.replace(/\{sid\}/g, id ?? '');
     },
     // Interactive arguments (a normal TUI session with the task as first message), only for executors that define them.
-    interactive: (def.interactiveArgs ?? DEFAULT_INTERACTIVE_ARGS[def.name]) ? (msg, job, sid, opts = {}) => [def.buildCmd, fillArgs(def.interactiveArgs ?? DEFAULT_INTERACTIVE_ARGS[def.name], varsFor(msg, job, sid, opts))] : null,
+    interactive: (def.interactiveArgs ?? DEFAULT_INTERACTIVE_ARGS[def.name]) ? (msg, job, sid, opts = {}) => [def.interactiveCmd ?? def.buildCmd, fillArgs(def.interactiveArgs ?? DEFAULT_INTERACTIVE_ARGS[def.name], varsFor(msg, job, sid, opts))] : null,
     // true: the agent has no way to take a first message on its command line (Perch), so the bridge types it into the window after start-up.
     typeFirst: def.typeFirstMessage === true,
     restore: def.restore ?? '',

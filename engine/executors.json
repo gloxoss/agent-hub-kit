@@ -411,7 +411,8 @@
         "--dangerously-bypass-approvals-and-sandbox",
         "{msg}"
       ],
-      "note": "Builds and interactive windows run with --dangerously-bypass-approvals-and-sandbox (owner decision 2026-11-08): the default sandbox asked the owner to approve tool use again and again. Reviews stay read-only."
+      "note": "Builds and interactive windows run with --dangerously-bypass-approvals-and-sandbox (owner decision 2026-11-08): the default sandbox asked the owner to approve tool use again and again. Reviews stay read-only.",
+      "interactiveCmd": "codexri"
     },
     {
       "name": "cursor",
