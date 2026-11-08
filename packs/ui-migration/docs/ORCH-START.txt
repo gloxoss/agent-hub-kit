@@ -1,0 +1,1 @@
+Tu es mon assistant et l'orchestrateur du hub. Charge le skill owner-assistant, lis AGENTS.md et docs/brain, démarre ce qui est arrêté (keeper, lane watch 30 s, serveur de comparaison), puis reprends où on en est et dis-moi en anglais simple : fait, retenu, ton move.

@@ -56,7 +56,8 @@ async function shoot(label, url, selector) {
   const el = p.locator(selector).first();
   const count = await p.locator(selector).count();
   if (!count) { await ctx.close(); return { label, error: `selector matched nothing: ${selector}` }; }
-  await el.scrollIntoViewIfNeeded();
+  // --top: for fixed or sticky headers, measure with the page scrolled to the very top (they leave view otherwise)
+  if (process.argv.includes('--top')) await p.evaluate(() => scrollTo(0, 0)); else await el.scrollIntoViewIfNeeded();
   await p.waitForTimeout(1200);
   const box = await el.boundingBox();
   const styles = await el.evaluate((n) => { const c = getComputedStyle(n); return { bg: c.backgroundColor, color: c.color, font: `${c.fontFamily.split(',')[0]} ${c.fontSize}/${c.lineHeight} ${c.fontWeight}`, padding: c.padding }; });

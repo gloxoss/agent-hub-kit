@@ -382,7 +382,7 @@
       "name": "codex",
       "kind": "reviewer",
       "maxSessions": 2,
-      "buildCmd": "codex",
+      "buildCmd": "codexr",
       "buildExtraArgs": [
         "exec",
         "--json",
@@ -390,7 +390,7 @@
         "--dangerously-bypass-approvals-and-sandbox",
         "{msg}"
       ],
-      "reviewCmd": "codex",
+      "reviewCmd": "codexr",
       "reviewExtraArgs": [
         "exec",
         "--json",
@@ -404,7 +404,7 @@
         "{msg}"
       ],
       "watch": "codex resume {sid}",
-      "restore": "Codex / ChatGPT usage limit: wait for the reset, or run codex login with another account.",
+      "restore": "Codex usage limit: codexr rotates to the next saved account (codexs status shows who has quota; codexs add <name> adds one).",
       "disabled": false,
       "maxReviews": 2,
       "interactiveArgs": [
