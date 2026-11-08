@@ -387,8 +387,7 @@
         "exec",
         "--json",
         "--skip-git-repo-check",
-        "--sandbox",
-        "workspace-write",
+        "--dangerously-bypass-approvals-and-sandbox",
         "{msg}"
       ],
       "reviewCmd": "codex",
@@ -409,10 +408,10 @@
       "disabled": false,
       "maxReviews": 2,
       "interactiveArgs": [
-        "--sandbox",
-        "workspace-write",
+        "--dangerously-bypass-approvals-and-sandbox",
         "{msg}"
-      ]
+      ],
+      "note": "Builds and interactive windows run with --dangerously-bypass-approvals-and-sandbox (owner decision 2026-11-08): the default sandbox asked the owner to approve tool use again and again. Reviews stay read-only."
     },
     {
       "name": "cursor",
@@ -608,8 +607,7 @@
         "exec",
         "--json",
         "--skip-git-repo-check",
-        "--sandbox",
-        "workspace-write",
+        "--dangerously-bypass-approvals-and-sandbox",
         "{msg}"
       ],
       "interactiveArgs": [
@@ -617,8 +615,7 @@
         "codex",
         "--interactive",
         "--",
-        "--sandbox",
-        "workspace-write",
+        "--dangerously-bypass-approvals-and-sandbox",
         "{msg}"
       ],
       "reviewCmd": "agent-accounts",
@@ -637,7 +634,7 @@
       ],
       "watch": "agent-accounts resume codex {sid}",
       "restore": "All Codex accounts are out of quota: agent-accounts status. Wait for the earliest reset, or add an account: agent-accounts add codex <name>.",
-      "note": "Rotates between saved accounts with agent-accounts (https://github.com/gloxoss/agent-accounts). Off until you save accounts: agent-accounts import <provider> <name>, then raise maxSessions."
+      "note": "Rotates between saved accounts with agent-accounts (https://github.com/gloxoss/agent-accounts). Off until you save accounts: agent-accounts import <provider> <name>, then raise maxSessions. Builds and interactive windows run with --dangerously-bypass-approvals-and-sandbox (owner decision 2026-11-08): the default sandbox asked the owner to approve tool use again and again. Reviews stay read-only."
     },
     {
       "name": "claude-rot",

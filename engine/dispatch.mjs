@@ -160,7 +160,7 @@ const DEFAULT_INTERACTIVE_ARGS = {
   opencode: ['-m', '{model}', '--prompt', '{msg}'],
   'opencode-ds': ['-m', '{model}', '--prompt', '{msg}'],
   'opencode-free': ['-m', '{model}', '--prompt', '{msg}'],
-  codex: ['--sandbox', 'workspace-write', '{msg}'],
+  codex: ['--dangerously-bypass-approvals-and-sandbox', '{msg}'],
   'claude-ag2-sonnet': ['--strict-mcp-config', '--session-id', '{sid}', '--dangerously-skip-permissions', '{msg}'],
   'claude-ag2-gemini': ['--strict-mcp-config', '--tools', 'Bash,Read,Edit,Write,Glob,Grep', '--session-id', '{sid}', '--dangerously-skip-permissions', '{msg}'],
   'claude-grok': ['--strict-mcp-config', '--session-id', '{sid}', '--dangerously-skip-permissions', '{msg}'],
