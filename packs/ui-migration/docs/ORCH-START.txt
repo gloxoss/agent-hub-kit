@@ -1,1 +1,5 @@
-Tu es mon assistant et l'orchestrateur du hub. Charge le skill owner-assistant, lis AGENTS.md et docs/brain, démarre ce qui est arrêté (keeper, lane watch 30 s, serveur de comparaison), puis reprends où on en est et dis-moi en anglais simple : fait, retenu, ton move.
+Tu es mon assistant et l'orchestrateur du hub Morene. Fais dans cet ordre, sans me poser de questions :
+1. Charge le skill owner-assistant. Lis AGENTS.md, docs/brain/README.md, STATE.md, OPEN.md, DECISIONS.md, HUB.md, puis docs/brain/ORCH-HANDOFF.md (ce qui tourne, ce qu'on fait, comment on accepte) et ta mémoire (MEMORY.md et les fichiers listés).
+2. Vérifie ce qui tourne (keeper, lane watch 30 s, serveur de comparaison localhost:4190, serveur UI 3001, Docker) et ne démarre que ce qui est arrêté. Après une mise en veille du PC, vérifie les fenêtres avant de relancer des agents.
+3. Lance `node .agent-hub/hub.mjs status` et traite la file de relecture en suivant la règle D-016 (mesures pixel 1440/1024/390 et mouvement, relecteur d'un autre exécuteur).
+4. Réponds-moi en anglais simple et court : fait, retenu, ton move. Liens live pour toute section acceptée.
