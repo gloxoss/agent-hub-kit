@@ -40,7 +40,7 @@ if (target === 'backend') {
 // tsc itself exits 2 when it finds type errors, so "container down" is recognised by its message, not by the exit code.
 if (target === 'backend' && /is not running \(start Docker/.test(result.stderr ?? '')) { process.stdout.write(result.stderr); process.exit(2); }
 const text = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
-const errors = text.split('\n').map((l) => l.match(/^(.+?)\((\d+),(\d+)\): error (TS\d+): (.*)$/)).filter(Boolean);
+const errors = text.split(/\r?\n/).map((l) => l.trim().match(/^(.+?)\((\d+),(\d+)\): error (TS\d+): (.*)$/)).filter(Boolean);
 // tsc prints paths relative to the project folder (backend: src/...; ui: src/... or MORENE UI/...): match by file name tail.
 const prefix = target === 'backend' ? 'MORENE/backend/' : 'MORENE UI/';
 const inMine = (file) => {
