@@ -45,3 +45,6 @@ Run one docs-only audit task per template (`tools/make-motion-tasks.mjs`): it me
 - `make-section-tasks.mjs`: writes one `S-sec-<site>-<section>` brief per audited section.
 - `make-motion-tasks.mjs`: writes one `M-motion-qa-<site>` audit task per template.
 Copy them to `ops/e2e/` of the project (Playwright installed in that folder).
+
+## Rule 7: fonts are part of parity (added 2026-11-08)
+The pixel score barely sees a wrong font (Arial instead of Inter Tight looks "close" in the numbers and wrong to the eye). Before any section is accepted, check that every font family of the original is DECLARED in the app (local `.woff2` under `public/media/<site>/fonts/`, `@font-face` in `src/styles/<site>/fonts.css`, no external URL) and that the computed `font-family` of headings, paragraphs, buttons and small text is the same in the original and the rebuild (`document.fonts.check`, list of loaded faces). Do this FIRST for every template: fonts are a one-time task per site, and every section inherits it.

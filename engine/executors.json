@@ -411,8 +411,8 @@
         "--dangerously-bypass-approvals-and-sandbox",
         "{msg}"
       ],
-      "note": "Builds and interactive windows run with --dangerously-bypass-approvals-and-sandbox (owner decision 2026-11-08): the default sandbox asked the owner to approve tool use again and again. Reviews stay read-only.",
-      "interactiveCmd": "codexri"
+      "note": "Builds and interactive windows run with --dangerously-bypass-approvals-and-sandbox (owner decision 2026-11-08): the default sandbox asked the owner to approve tool use again and again. Reviews stay read-only. Interactive windows use plain codex (default login): the codexr wrapper crashed the TUI (remote app-server worker channel closed) and each account slot asks to trust the folder again. Headless runs use codexr (rotation).",
+      "interactiveCmd": "codex"
     },
     {
       "name": "cursor",
