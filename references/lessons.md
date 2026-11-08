@@ -297,3 +297,12 @@ Format: symptom, cause, fix. Entries are grouped by the part of the loop they co
 - **After the orchestrator's own session ends, windows keep running but their heartbeats stop,** so the keeper sees tasks with no live job and starts a second agent on each one. At session start: list windows per task and close the stale duplicate (log age over 10 minutes) before the keeper cycle, or stop the keeper until it is done.
 - **Perch shares one thread per folder by default.** Without `--thread <job>` every `perch run` in the same folder piles onto one conversation (about 145k tokens), and runs then end with status `failed`.
 - **Perch Starter has a 5-hour usage limit shared by all parallel runs.** More than 2 at once stall each other ("Steps still running are using the rest of your 5-hour limit").
+
+## Lessons from the Morene template rework (2026-11-08)
+- **Page height is not parity.** Five templates were accepted on total page height and the owner rejected them (wrong headers, cards, motion). Accept per section, with a pixel score and a motion curve at 1440, 1024 and 390 (`ui-parity-loop`).
+- **Test the tablet band (810 to 1439).** A 850 px preview frame lands there. 768 is the phone band.
+- **Builders that rebuild from audit prose guess.** Make them measure computed layout of the original first and write the numbers in the task.
+- **Animations are never "close by eye".** `motion-compare` found a hero entrance of 120 ms against 1380 ms. Require it per animation, and run a docs-only motion audit per template.
+- **Parallel builders break the shared dev server.** Deleting an imported file before its replacement exists made every showcase page fail. Brief rule: create the replacement first; the lane watch checks `/showcase/<site>` each cycle.
+- **Send LIVE links after each accepted section, not screenshots.** The owner wants to click and compare.
+- **An executor with no credits can still answer a ping.** Check the real credit signal, not ping.

@@ -21,7 +21,8 @@ If `package.json` does not exist: follow the merge contract's scaffold section (
 6. **Motion:** shared `Reveal` data attributes first. A bespoke `<variant>-client.tsx` island only for motion `Reveal` cannot express or for interaction state. Port each motion line from the audit; log any that cannot be ported in the audit doc under "Not portable".
 7. **Fixture:** `src/sections/<type>/fixtures.ts` with the source copy and local image paths (copy needed assets from `localized/<site>/` into `public/media/<site>/`).
 8. **Register:** add the entry to `src/sections/<type>/index.ts` with `sources`. Never edit `src/sections/registry.generated.ts`; run `node scripts/gen-registry.mjs` to refresh it. Page documents are not yours: the `P-<site>-<page>` assemble task adds blocks to pages.
-9. **Self-check:** run the build-phase gates in `docs/system/GATES.md`. Fix every hit before reporting. Under D-010 there are no browser checks in this phase.
+9. **Self-check:** run the build-phase gates in `docs/system/GATES.md`. Fix every hit before reporting.
+10. **Parity (D-016, supersedes D-010):** load `ui-parity-loop`. Run P1 (pixel score at 1440, 1024, 390), P2 (motion-compare per animation) and P3 (shared page compiles). Paste the numbers in your report; a report without them is rejected. Measure the original's computed layout before step 5, not after.
 
 ## Hand off
 

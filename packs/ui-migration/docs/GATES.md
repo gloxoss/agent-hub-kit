@@ -18,6 +18,16 @@ Shared by `ui-build` (self-check) and the `ui-parity-verifier` agent (independen
 | G10 | Registry sync | every registry key has a fixture and a ledger row | manual |
 | G11 | Independent from the source | `grep -rnE "webflow\.io\|localized/\|docs/" src --include=*.ts --include=*.tsx`, ignoring comment lines | no hits outside comments |
 
+## Parity gates (runtime, required from the builder AND re-run by the orchestrator, D-016)
+
+| # | Check | Command | Pass |
+|---|---|---|---|
+| P1 | Pixel score per width | `node ops/e2e/section-compare.mjs <site> --orig <sel> --rebuild '[data-section="<site>-<id>"]' --width 1440` (then 1024, 390) | under 8% average and 15% clearly different; box within 2% |
+| P2 | Motion per animation | `node ops/e2e/motion-compare.mjs <site> --orig <sel> --rebuild <sel> --trigger load\|scroll\|hover` | "motion matches the original" |
+| P3 | Shared page still compiles | open `/showcase/<site>` | no build error, no missing import |
+
+Widths are 1440, 1024 and 390 everywhere (1024 is the tablet band 810 to 1439). The V2 widths below are for the final page-level pass only.
+
 ## Verify-phase gates (runtime, run by the verifier)
 
 | # | Check | How | Pass |

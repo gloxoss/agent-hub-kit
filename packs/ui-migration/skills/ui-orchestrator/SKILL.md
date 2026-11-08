@@ -51,6 +51,10 @@ Spawn the worker with the Agent tool, `subagent_type` set to the worker agent, a
 
 One rework round per task. After it, accept unless a finding is a functional bug, an accessibility failure, or a visible layout break; everything else goes into `docs/migration/parity-backlog.md` for the single page-level parity pass.
 
+## Acceptance is measured (D-016)
+
+Never accept a build task on page height, a clean build, or a builder's "looks the same". Require the pixel lines (1440, 1024, 390) and the motion lines in the report, re-run one of each yourself, and use a reviewer of a different executor. After each accepted section send the owner live compare links, not screenshots. When the owner says it looks wrong, measure at the width they use and add section tasks. Skill: `ui-parity-loop`; prompts: `docs/PROMPTS.md`.
+
 ## Audit (every task, before accept)
 
 1. Read the changelog entry and `git status` / `git diff -- <files>`. Every changed file must be inside the claim; anything else is a reject.
