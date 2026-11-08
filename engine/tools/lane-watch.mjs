@@ -44,6 +44,25 @@ function lastQuota(task) {
   } catch { return ''; }
 }
 
+// The five showcase pages share one dev server: a builder who leaves a missing import or a syntax error breaks them all.
+// Report it (once per distinct error) with the file named by the compiler, so the right builder is told within 30 s.
+const SITES_HEALTH = ['safah', 'chalant', 'dewskincare', 'mirea', 'raydiant'];
+async function pageHealth() {
+  const out = [];
+  for (const site of SITES_HEALTH) {
+    try {
+      const r = await fetch(`http://localhost:3001/showcase/${site}`, { signal: AbortSignal.timeout(20000) });
+      if (r.status >= 500) {
+        const body = await r.text();
+        const m = body.match(/Module not found: Can.{1,8}t resolve '([^']+)'/);
+        const file = (body.match(/\.\/src\/[A-Za-z0-9_.\/\[\]-]+\.(?:tsx?|css)/) || [''])[0];
+        out.push([`pagebroken:${site}:${file}${m ? m[1] || '' : ''}`, `PAGE BROKEN /showcase/${site} (HTTP ${r.status}) ${file ? 'in ' + file : ''} ${m && m[1] ? '(cannot resolve ' + m[1] + ')' : ''}: tell the builder who owns that file`]);
+      }
+    } catch { /* dev server busy or down: say nothing */ }
+  }
+  return out;
+}
+
 function snapshot() {
   const out = [];
   const win = run('tools/herdr-bridge.mjs', ['status']).split('\n').map((l) => l.match(/^\s+(w\d+:\w+)\s+(.+?)\s+(interactive|log view)\s+(running|finished)/)).filter(Boolean);
@@ -91,12 +110,14 @@ function snapshot() {
     }
   } catch {}
 
+  out.push(...(globalThis.__health ?? []));
   if (review > 0) out.push([`review:${review}`, `REVIEW queue: ${review} task(s) wait for the orchestrator`]);
   if (live.length < MIN_AGENTS) out.push([`low:${live.length}`, `LOW LANES: ${live.length} of ${MIN_AGENTS} agents running, add work`]);
   return out;
 }
 
 for (;;) {
+  globalThis.__health = await pageHealth();
   const now = new Set();
   for (const [key, line] of snapshot()) {
     now.add(key);
