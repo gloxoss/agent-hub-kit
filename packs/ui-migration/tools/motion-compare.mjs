@@ -64,7 +64,8 @@ async function record(label, url, selector) {
     await p.evaluate((yy) => window.scrollTo(0, Math.max(0, yy - 1400)), y); await p.waitForTimeout(900);
     await p.evaluate((yy) => window.scrollTo({ top: Math.max(0, yy - 300), behavior: 'instant' }), y);
   } else {
-    await p.reload({ waitUntil: 'commit' });
+    // a busy dev server can take longer than Playwright's 30 s default to answer a reload
+    await p.reload({ waitUntil: 'commit', timeout: 180000 });
   }
   for (let i = 0; i < FRAMES; i++) { await grab(); await p.waitForTimeout(STEP); }
   await ctx.close();

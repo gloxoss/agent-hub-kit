@@ -306,3 +306,4 @@ Format: symptom, cause, fix. Entries are grouped by the part of the loop they co
 - **Parallel builders break the shared dev server.** Deleting an imported file before its replacement exists made every showcase page fail. Brief rule: create the replacement first; the lane watch checks `/showcase/<site>` each cycle.
 - **Send LIVE links after each accepted section, not screenshots.** The owner wants to click and compare.
 - **An executor with no credits can still answer a ping.** Check the real credit signal, not ping.
+- **A section can look right in the pixel check and still show the mobile menu on desktop.** A CSS rule that declares `display: none` and then `display: flex` in the same block shows the element everywhere; JS then hides it after hydration, and React strict mode in development can undo that hiding. Always check the computed `display` of overlays and menus at every width, a few seconds after load, and write the closed state in CSS (not only in JS).
