@@ -25,6 +25,8 @@ Shared by `ui-build` (self-check) and the `ui-parity-verifier` agent (independen
 | P1 | Pixel score per width | `node ops/e2e/section-compare.mjs <site> --orig <sel> --rebuild '[data-section="<site>-<id>"]' --width 1440` (then 1024, 390) | under 8% average and 15% clearly different; box within 2% |
 | P2 | Motion per animation | `node ops/e2e/motion-compare.mjs <site> --orig <sel> --rebuild <sel> --trigger load\|scroll\|hover` | "motion matches the original" |
 | P3 | Shared page still compiles | open `/showcase/<site>` | no build error, no missing import |
+| P4 | Shared motion library used | `node tools/motion-reuse-check.mjs <site> --task <TASK>` | 0 raw GSAP uses in the task files |
+| P5 | New effects catalogued | read `docs/migration/MOTION-CATALOG.md` | every new effect has a line: name, options, tokens, motion-compare measurement |
 
 Widths are 1440, 1024 and 390 everywhere (1024 is the tablet band 810 to 1439). The V2 widths below are for the final page-level pass only.
 

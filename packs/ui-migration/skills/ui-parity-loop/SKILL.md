@@ -7,7 +7,7 @@ description: Measured fidelity loop for rebuilding a template section as React +
 
 Born from a failed run (Morene, Nov 2026): five templates were accepted on total page height, and the owner saw wrong headers, cards and animations. Page height proves nothing. Only a section measured against the original proves anything.
 
-## The six rules
+## The rules
 
 1. **One section = one task = one root.** The rebuilt root carries `id="<section>"` and `data-section="<site>-<section>"`. The original root selector comes from the audit ("Root selector"). Never build a whole page in one task.
 2. **Three widths, always:** 1440 (desktop, >= 1440), 1024 (tablet, 810 to 1439), 390 (phone, < 810). The tablet band is where owners look (a 850 px preview frame lands there). A run that tests 1440 and 768 misses it.
@@ -51,3 +51,6 @@ The pixel score barely sees a wrong font (Arial instead of Inter Tight looks "cl
 
 ## Rule 8: never hide content by default (added 2026-11-09)
 A builder that adds a scroll reveal often leaves the element at `opacity: 0` until the animation fires. When the trigger does not fire (fast scroll, screenshot tool, no JS, reduced motion) the section stays blank: a 600 px empty area and a 1300 px empty testimonial band were seen this way. The initial state must be visible in CSS; the animation is a progressive enhancement that starts only when JS runs and the element is really in view, and every element must end visible. Check by loading the page, scrolling with real steps, and by taking the section screenshot: nothing may be missing that the original shows. Also compare the page at `scrollY = 0` (use `section-compare --top`), because a section scrolled into view hides offsets that the first screen shows.
+
+## Rule 9: every animation goes into the shared motion library (added 2026-11-10)
+The owner reuses these effects in their own sites, so an animation written inline in a section is lost work. Loading and intro, scroll reveals and parallax, hover states, the cursor, marquees, menus, accordions, carousels, page transitions: each one is a hook or component in the project motion library (`src/libs/motion`), configured by options (duration, delay, ease, distance, stagger, trigger) and styled by CSS variables, so a different site only changes the values and the tokens. A section file contains configuration, never raw `gsap.` or `ScrollTrigger.` calls. If the effect is missing from the library, add it first (parameterised, with cleanup and `prefers-reduced-motion`), list it in `docs/migration/MOTION-CATALOG.md` with the measurement that validated it, then call it. Gates P4 (`tools/motion-reuse-check.mjs`) and P5 (catalogue entry). Pixel tolerance stays loose (under 8 percent average, 15 percent clearly different): behaviour fidelity matters, not every pixel. Full spec: `docs/MOTION-LIBRARY.md`.

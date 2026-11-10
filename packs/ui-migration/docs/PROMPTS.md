@@ -21,7 +21,7 @@ Règles non négociables: une tâche par section; widths 1440/1024/390; seuil pi
 
 ## 3. Construire (builder, une section)
 ```
-Tâche S-sec-<site>-<section>. Charge ui-build et ui-parity-loop. Mesure l'original, construis depuis les chiffres, racine id + data-section. Preuves obligatoires dans ton rapport: section-compare aux 3 largeurs (score pixel + boîte), motion-compare par animation (load/scroll/hover), gates G1-G11, coupling-check. Ne casse jamais /showcase/<site>. Pas de "ça ressemble": des chiffres.
+Tâche S-sec-<site>-<section>. Charge ui-build et ui-parity-loop. Mesure l'original, construis depuis les chiffres, racine id + data-section. Preuves obligatoires dans ton rapport: section-compare aux 3 largeurs (score pixel + boîte), motion-compare par animation (load/scroll/hover), gates G1-G11, coupling-check. Ne casse jamais /showcase/<site>. Pas de "ça ressemble": des chiffres. Toute animation (chargement, défilement, survol, curseur, bandeau, menu, accordéon, carrousel) est une brique réutilisable de src/libs/motion, paramétrable et stylée par variables CSS: ta section ne fait que l'appeler (aucun gsap. en direct), la brique manquante est ajoutée d'abord et inscrite dans docs/migration/MOTION-CATALOG.md avec sa mesure (gates P4, P5, voir docs/MOTION-LIBRARY.md).
 ```
 
 ## 4. Accepter (orchestrateur)
